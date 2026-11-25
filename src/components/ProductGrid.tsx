@@ -60,7 +60,7 @@ function AnimatedHeartButton({
       onClick={handlePress}
       aria-pressed={saved}
       aria-label={saved ? 'Убрать из избранного' : 'Добавить в избранное'}
-      className="relative w-11 h-11 rounded-full flex items-center justify-center bg-white/60 backdrop-blur-[1px] hover:bg-white/85 transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-black"
+      className="relative w-11 h-11 rounded-full flex items-center justify-center bg-white border border-[#141414]/15 shadow-sm hover:bg-neutral-50 transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-black"
     >
       <AnimatePresence>
         {burstKey > 0 && saved && (
@@ -216,12 +216,14 @@ export function ProductGrid({
                   className="group relative flex flex-col justify-between p-3.5 sm:p-4 rounded-[30px] bg-white border-[1.5px] border-[#1A1A1A] shadow-[0_8px_22px_rgba(0,0,0,0.08)] transition-transform duration-200 hover:-translate-y-0.5"
                 >
                   {/* Product Thumbnail */}
-                  <div className="relative w-full aspect-[1.22/1] rounded-[20px] bg-[#E3E3E3] flex items-center justify-center overflow-visible">
+                  <div className="relative w-full aspect-[1.22/1] rounded-[20px] bg-[#F4F4F4] border border-[#141414]/10 flex items-center justify-center overflow-visible">
                     <div className="w-full h-full rounded-[20px] overflow-hidden flex items-center justify-center">
                       {showImage ? (
                         <img
                           src={item.imageUrl}
                           alt={item.name || `Товар #${item.id}`}
+                          loading="lazy"
+                          decoding="async"
                           referrerPolicy="no-referrer"
                           onError={() =>
                             setFailedImages((prev) => ({...prev, [item.id]: true}))
@@ -229,7 +231,7 @@ export function ProductGrid({
                           className="w-full h-full object-cover"
                         />
                       ) : (
-                        <PlaceholderStarIcon className="w-24 h-24 sm:w-28 sm:h-28 text-[#C7C7C7]" />
+                        <PlaceholderStarIcon className="w-24 h-24 sm:w-28 sm:h-28 text-[#D0D0D0]" />
                       )}
                     </div>
 
@@ -243,7 +245,7 @@ export function ProductGrid({
                             type="button"
                             onClick={() => onQuickEdit(item.id)}
                             aria-label="Редактировать товар"
-                            className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white/90 border border-[#141414] flex items-center justify-center text-[#141414] hover:bg-white active:scale-90 transition-transform cursor-pointer shadow-sm"
+                            className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white border border-[#141414] flex items-center justify-center text-[#141414] hover:bg-neutral-50 active:scale-90 transition-transform cursor-pointer shadow-sm"
                           >
                             <Pencil className="w-4 h-4" />
                           </button>

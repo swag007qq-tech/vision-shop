@@ -1,7 +1,6 @@
 import React, {useEffect} from 'react';
-import {type User} from 'firebase/auth';
 import {AnimatePresence, motion} from 'motion/react';
-import {Cloud, Heart, LogOut, Minus, Plus, Trash2, X} from 'lucide-react';
+import {Heart, Minus, Plus, Trash2, X} from 'lucide-react';
 import {ProductItem} from '../data/products';
 import {RarityBadge} from './RarityBadge';
 import {GemIcon, PlaceholderStarIcon, SolidCartIcon} from './VisionIllustrations';
@@ -11,61 +10,12 @@ export interface CartEntry {
   quantity: number;
 }
 
-function CloudSyncBar({
-  authUser,
-  onGoogleSignIn,
-  onGoogleSignOut,
-}: {
-  authUser: User | null;
-  onGoogleSignIn: () => Promise<void>;
-  onGoogleSignOut: () => Promise<void>;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-2 px-4 sm:px-5 py-2.5 border-b border-black/10 bg-neutral-50/80 text-[12px] font-bold text-[#141414]">
-      <div className="flex items-center gap-1.5 min-w-0">
-        <Cloud className="w-3.5 h-3.5 shrink-0 text-neutral-600" />
-        {authUser ? (
-          <span className="truncate text-neutral-700">
-            Синхронизация: {authUser.email}
-          </span>
-        ) : (
-          <span className="truncate text-neutral-500">
-            Сохранить в облачной базе данных
-          </span>
-        )}
-      </div>
-
-      {authUser ? (
-        <button
-          type="button"
-          onClick={() => void onGoogleSignOut()}
-          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-black/20 bg-white text-[11px] font-bold text-neutral-700 hover:bg-neutral-100 cursor-pointer shrink-0"
-        >
-          <LogOut className="w-3 h-3" />
-          <span>Выйти</span>
-        </button>
-      ) : (
-        <button
-          type="button"
-          onClick={() => void onGoogleSignIn()}
-          className="px-3 py-1 rounded-full bg-[#141414] text-white text-[11px] font-bold hover:bg-black cursor-pointer shrink-0 whitespace-nowrap"
-        >
-          Войти через Google
-        </button>
-      )}
-    </div>
-  );
-}
-
 interface FavoritesDrawerProps {
   open: boolean;
   onClose: () => void;
   items: ProductItem[];
   onToggleFavorite: (id: number) => void;
   onAddToCart: (product: ProductItem) => void;
-  authUser: User | null;
-  onGoogleSignIn: () => Promise<void>;
-  onGoogleSignOut: () => Promise<void>;
 }
 
 export function FavoritesDrawer({
@@ -74,9 +24,6 @@ export function FavoritesDrawer({
   items,
   onToggleFavorite,
   onAddToCart,
-  authUser,
-  onGoogleSignIn,
-  onGoogleSignOut,
 }: FavoritesDrawerProps) {
   useEffect(() => {
     if (!open) return;
@@ -102,7 +49,7 @@ export function FavoritesDrawer({
             exit={{opacity: 0}}
             transition={{duration: 0.18}}
             onClick={onClose}
-            className="fixed inset-0 bg-black/45 backdrop-blur-[2px]"
+            className="fixed inset-0 bg-black/50"
           />
 
           <motion.div
@@ -136,12 +83,6 @@ export function FavoritesDrawer({
               </button>
             </div>
 
-            <CloudSyncBar
-              authUser={authUser}
-              onGoogleSignIn={onGoogleSignIn}
-              onGoogleSignOut={onGoogleSignOut}
-            />
-
             {/* Body */}
             <div className="flex-1 overflow-y-auto px-4 sm:px-5 py-4 space-y-3">
               {items.length === 0 ? (
@@ -162,16 +103,18 @@ export function FavoritesDrawer({
                     key={item.id}
                     className="flex items-center gap-3 p-3 rounded-[22px] bg-white border-[1.5px] border-[#1A1A1A] shadow-[0_4px_12px_rgba(0,0,0,0.05)]"
                   >
-                    <div className="w-16 h-16 rounded-[14px] bg-[#E3E3E3] flex items-center justify-center overflow-hidden shrink-0">
+                    <div className="w-16 h-16 rounded-[14px] bg-[#F4F4F4] border border-[#141414]/10 flex items-center justify-center overflow-hidden shrink-0">
                       {item.imageUrl ? (
                         <img
                           src={item.imageUrl}
                           alt={item.name || `Товар #${item.id}`}
+                          loading="lazy"
+                          decoding="async"
                           referrerPolicy="no-referrer"
                           className="w-full h-full object-cover"
                         />
                       ) : (
-                        <PlaceholderStarIcon className="w-10 h-10 text-[#C7C7C7]" />
+                        <PlaceholderStarIcon className="w-10 h-10 text-[#D0D0D0]" />
                       )}
                     </div>
 
@@ -229,9 +172,6 @@ interface CartDrawerProps {
   entries: CartEntry[];
   onUpdateQty: (id: number, delta: number) => void;
   onRemoveItem: (id: number) => void;
-  authUser: User | null;
-  onGoogleSignIn: () => Promise<void>;
-  onGoogleSignOut: () => Promise<void>;
 }
 
 export function CartDrawer({
@@ -240,9 +180,6 @@ export function CartDrawer({
   entries,
   onUpdateQty,
   onRemoveItem,
-  authUser,
-  onGoogleSignIn,
-  onGoogleSignOut,
 }: CartDrawerProps) {
   useEffect(() => {
     if (!open) return;
@@ -281,7 +218,7 @@ export function CartDrawer({
             exit={{opacity: 0}}
             transition={{duration: 0.18}}
             onClick={onClose}
-            className="fixed inset-0 bg-black/45 backdrop-blur-[2px]"
+            className="fixed inset-0 bg-black/50"
           />
 
           <motion.div
@@ -315,12 +252,6 @@ export function CartDrawer({
               </button>
             </div>
 
-            <CloudSyncBar
-              authUser={authUser}
-              onGoogleSignIn={onGoogleSignIn}
-              onGoogleSignOut={onGoogleSignOut}
-            />
-
             {/* Body */}
             <div className="flex-1 overflow-y-auto px-4 sm:px-5 py-4 space-y-3">
               {entries.length === 0 ? (
@@ -341,16 +272,18 @@ export function CartDrawer({
                     key={product.id}
                     className="flex items-center gap-3 p-3 rounded-[22px] bg-white border-[1.5px] border-[#1A1A1A] shadow-[0_4px_12px_rgba(0,0,0,0.05)]"
                   >
-                    <div className="w-16 h-16 rounded-[14px] bg-[#E3E3E3] flex items-center justify-center overflow-hidden shrink-0">
+                    <div className="w-16 h-16 rounded-[14px] bg-[#F4F4F4] border border-[#141414]/10 flex items-center justify-center overflow-hidden shrink-0">
                       {product.imageUrl ? (
                         <img
                           src={product.imageUrl}
                           alt={product.name || `Товар #${product.id}`}
+                          loading="lazy"
+                          decoding="async"
                           referrerPolicy="no-referrer"
                           className="w-full h-full object-cover"
                         />
                       ) : (
-                        <PlaceholderStarIcon className="w-10 h-10 text-[#C7C7C7]" />
+                        <PlaceholderStarIcon className="w-10 h-10 text-[#D0D0D0]" />
                       )}
                     </div>
 

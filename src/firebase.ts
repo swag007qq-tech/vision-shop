@@ -1,5 +1,5 @@
 import {initializeApp} from 'firebase/app';
-import {GoogleAuthProvider, getAuth} from 'firebase/auth';
+import {getAuth} from 'firebase/auth';
 import {doc, getDocFromServer, getFirestore} from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
@@ -25,10 +25,10 @@ export const db =
     : getFirestore(app);
 
 export const auth = getAuth(app);
-export const googleProvider = new GoogleAuthProvider();
-googleProvider.setCustomParameters({prompt: 'select_account'});
 
 export const BOOTSTRAPPED_ADMIN_EMAIL = 'swag007qq@gmail.com';
+export const ADMIN_LOGIN_EMAIL =
+  (import.meta.env.VITE_ADMIN_EMAIL || '').trim() || BOOTSTRAPPED_ADMIN_EMAIL;
 
 // Schema limits synchronized verbatim with firebase-blueprint.json & firestore.rules
 export const SCHEMA_LIMITS = {

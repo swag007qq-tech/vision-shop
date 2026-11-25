@@ -117,7 +117,7 @@ export function HeaderBar({activeTab, onTabChange, isAdmin, onOpenAdmin}: Header
           {/* Segmented Nav: Каталог ✦ | Отзывы */}
           <nav
             aria-label="Основная навигация"
-            className="inline-flex items-center rounded-full bg-white/90 shadow-[0_6px_18px_rgba(0,0,0,0.08)]"
+            className="inline-flex items-center rounded-full bg-white shadow-[0_6px_18px_rgba(0,0,0,0.08)]"
           >
             <button
               type="button"

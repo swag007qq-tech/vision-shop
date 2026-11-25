@@ -4,7 +4,13 @@
  */
 
 import React, {useCallback, useEffect, useMemo, useState} from 'react';
-import {type User, onAuthStateChanged, signInWithPopup, signOut} from 'firebase/auth';
+import {
+  type User,
+  onAuthStateChanged,
+  sendEmailVerification,
+  signInWithEmailAndPassword,
+  signOut,
+} from 'firebase/auth';
 import {AdminModal} from './components/AdminModal';
 import {BackgroundScene} from './components/BackgroundScene';
 import {BottomDock} from './components/BottomDock';
@@ -14,7 +20,7 @@ import {ProductGrid} from './components/ProductGrid';
 import {ReviewsBlock} from './components/ReviewsBlock';
 import {CartDrawer, CartEntry, FavoritesDrawer} from './components/ShopDrawers';
 import {DEFAULT_PRODUCTS, ProductItem} from './data/products';
-import {auth, googleProvider} from './firebase';
+import {ADMIN_LOGIN_EMAIL, auth} from './firebase';
 import {
   checkIsFirestoreAdmin,
   ensureUserAccount,
@@ -204,11 +210,37 @@ export default function App() {
     }
   }, [cartQuantities]);
 
-  const handleGoogleSignIn = useCallback(async () => {
-    await signInWithPopup(auth, googleProvider);
+  const handlePasswordSignIn = useCallback(async (password: string) => {
+    const credential = await signInWithEmailAndPassword(auth, ADMIN_LOGIN_EMAIL, password);
+    if (credential.user && !credential.user.emailVerified) {
+      try {
+        await sendEmailVerification(credential.user);
+      } catch {
+        // Ignore rate-limit errors if verification email was recently sent
+      }
+    }
   }, []);
 
-  const handleGoogleSignOut = useCallback(async () => {
+  const handleRefreshVerification = useCallback(async () => {
+    if (!auth.currentUser) return false;
+    await auth.currentUser.reload();
+    const refreshed = auth.currentUser;
+    setAuthUser(refreshed);
+    if (refreshed.emailVerified) {
+      await ensureUserAccount(refreshed);
+      const adminStatus = await checkIsFirestoreAdmin(refreshed);
+      setIsFirestoreAdmin(adminStatus);
+      return adminStatus;
+    }
+    return false;
+  }, []);
+
+  const handleResendVerification = useCallback(async () => {
+    if (!auth.currentUser) return;
+    await sendEmailVerification(auth.currentUser);
+  }, []);
+
+  const handleAdminSignOut = useCallback(async () => {
     await signOut(auth);
     setIsFirestoreAdmin(false);
   }, []);
@@ -348,9 +380,6 @@ export default function App() {
         items={favoriteItems}
         onToggleFavorite={handleToggleFavorite}
         onAddToCart={handleAddToCart}
-        authUser={authUser}
-        onGoogleSignIn={handleGoogleSignIn}
-        onGoogleSignOut={handleGoogleSignOut}
       />
 
       <CartDrawer
@@ -359,9 +388,6 @@ export default function App() {
         entries={cartEntries}
         onUpdateQty={handleUpdateCartQty}
         onRemoveItem={handleRemoveCartItem}
-        authUser={authUser}
-        onGoogleSignIn={handleGoogleSignIn}
-        onGoogleSignOut={handleGoogleSignOut}
       />
 
       <AdminModal
@@ -372,9 +398,11 @@ export default function App() {
         }}
         authUser={authUser}
         isFirestoreAdmin={isFirestoreAdmin}
-        onGoogleSignIn={handleGoogleSignIn}
+        onPasswordSignIn={handlePasswordSignIn}
+        onRefreshVerification={handleRefreshVerification}
+        onResendVerification={handleResendVerification}
         onLogout={() => {
-          void handleGoogleSignOut();
+          void handleAdminSignOut();
         }}
         firestoreProductIds={firestoreProductIds}
         onSeedFirestore={handleSeedFirestore}

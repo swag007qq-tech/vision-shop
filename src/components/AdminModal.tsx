@@ -3,27 +3,24 @@ import {type User} from 'firebase/auth';
 import {AnimatePresence, motion} from 'motion/react';
 import {
   Check,
-  Copy,
   Database,
+  Eye,
+  EyeOff,
   ImagePlus,
   KeyRound,
   LogOut,
   Pencil,
   Plus,
+  RefreshCw,
   ShieldCheck,
   Trash2,
-  UserPlus,
   X,
 } from 'lucide-react';
 import {ProductItem, RARITY_OPTIONS, RarityCode} from '../data/products';
-import {BOOTSTRAPPED_ADMIN_EMAIL} from '../firebase';
+import {ADMIN_LOGIN_EMAIL} from '../firebase';
 import {
-  type AdminRecord,
-  addAdminInFirestore,
   createProductInFirestore,
   deleteProductFromFirestore,
-  removeAdminInFirestore,
-  subscribeAdmins,
   updateProductInFirestore,
 } from '../services/firestoreService';
 import {RarityBadge} from './RarityBadge';
@@ -34,7 +31,9 @@ interface AdminModalProps {
   onClose: () => void;
   authUser: User | null;
   isFirestoreAdmin: boolean;
-  onGoogleSignIn: () => Promise<void>;
+  onPasswordSignIn: (password: string) => Promise<void>;
+  onRefreshVerification: () => Promise<boolean>;
+  onResendVerification: () => Promise<void>;
   onLogout: () => void;
   firestoreProductIds: Set<number>;
   onSeedFirestore: () => Promise<void>;
@@ -58,19 +57,22 @@ const EMPTY_FORM: ProductFormState = {
   rarity: '',
 };
 
-function formatFirebaseAuthError(error: unknown): string {
+function formatPasswordAuthError(error: unknown): string {
   const msg = error instanceof Error ? error.message : String(error);
-  if (msg.includes('auth/unauthorized-domain')) {
-    const host = typeof window !== 'undefined' ? window.location.hostname : '';
-    return `Домен «${host}» не добавлен в Firebase. Откройте Firebase Console → Authentication → Settings → Authorized domains и добавьте этот домен.`;
+  if (msg.includes('auth/operation-not-allowed')) {
+    return 'В Firebase не включён вход по паролю (Email/Password). Откройте Firebase Console → Authentication → Sign-in method → Email/Password и включите его.';
   }
-  if (msg.includes('auth/popup-closed-by-user')) {
-    return 'Окно входа закрыто до завершения авторизации.';
+  if (
+    msg.includes('auth/invalid-credential') ||
+    msg.includes('auth/wrong-password') ||
+    msg.includes('auth/user-not-found')
+  ) {
+    return 'Неверный пароль администратора (или пользователь ещё не создан в Firebase Authentication).';
   }
-  if (msg.includes('auth/popup-blocked')) {
-    return 'Браузер заблокировал всплывающее окно входа. Разрешите всплывающие окна для сайта.';
+  if (msg.includes('auth/too-many-requests')) {
+    return 'Слишком много попыток входа. Подождите пару минут и попробуйте снова.';
   }
-  return msg || 'Не удалось выполнить вход через Google';
+  return msg || 'Не удалось выполнить вход';
 }
 
 function RaritySelector({
@@ -128,16 +130,20 @@ export function AdminModal({
   onClose,
   authUser,
   isFirestoreAdmin,
-  onGoogleSignIn,
+  onPasswordSignIn,
+  onRefreshVerification,
+  onResendVerification,
   onLogout,
   firestoreProductIds,
   onSeedFirestore,
   products,
   initialEditProductId = null,
 }: AdminModalProps) {
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [authError, setAuthError] = useState('');
-  const [googleLoading, setGoogleLoading] = useState(false);
-  const [copiedUid, setCopiedUid] = useState(false);
+  const [authInfo, setAuthInfo] = useState('');
+  const [loginLoading, setLoginLoading] = useState(false);
 
   const [showAddForm, setShowAddForm] = useState(false);
   const [addForm, setAddForm] = useState<ProductFormState>(EMPTY_FORM);
@@ -147,15 +153,11 @@ export function AdminModal({
   const [panelError, setPanelError] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const isOwner = Boolean(authUser?.emailVerified && authUser.email === BOOTSTRAPPED_ADMIN_EMAIL);
-  const [showAdminsBox, setShowAdminsBox] = useState(false);
-  const [adminsList, setAdminsList] = useState<AdminRecord[]>([]);
-  const [newAdminUid, setNewAdminUid] = useState('');
-  const [newAdminEmail, setNewAdminEmail] = useState('');
-
   useEffect(() => {
     if (!open) return;
+    setPassword('');
     setAuthError('');
+    setAuthInfo('');
     setPanelError('');
     setConfirmDeleteId(null);
 
@@ -175,17 +177,6 @@ export function AdminModal({
   }, [open, initialEditProductId, products]);
 
   useEffect(() => {
-    if (!open || !isOwner) return;
-    const unsub = subscribeAdmins(
-      (list) => setAdminsList(list),
-      () => {
-        // ignore listener warnings when closing
-      },
-    );
-    return () => unsub();
-  }, [open, isOwner]);
-
-  useEffect(() => {
     if (!open) return;
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -194,27 +185,54 @@ export function AdminModal({
     return () => window.removeEventListener('keydown', handleKey);
   }, [open, onClose]);
 
-  const handleGoogleAuthClick = async () => {
+  const handlePasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = password.trim();
+    if (!trimmed) {
+      setAuthError('Введите пароль администратора');
+      return;
+    }
     setAuthError('');
+    setAuthInfo('');
     setPanelError('');
-    setGoogleLoading(true);
+    setLoginLoading(true);
     try {
-      await onGoogleSignIn();
+      await onPasswordSignIn(trimmed);
+      setPassword('');
     } catch (error) {
-      setAuthError(formatFirebaseAuthError(error));
+      setAuthError(formatPasswordAuthError(error));
     } finally {
-      setGoogleLoading(false);
+      setLoginLoading(false);
     }
   };
 
-  const handleCopyUid = async () => {
-    if (!authUser?.uid) return;
+  const handleCheckVerifiedClick = async () => {
+    setAuthError('');
+    setAuthInfo('');
+    setLoginLoading(true);
     try {
-      await navigator.clipboard.writeText(authUser.uid);
-      setCopiedUid(true);
-      window.setTimeout(() => setCopiedUid(false), 1600);
-    } catch {
-      // ignore clipboard errors
+      const ok = await onRefreshVerification();
+      if (!ok) {
+        setAuthError('Почта ещё не подтверждена. Перейдите по ссылке из письма и нажмите ещё раз.');
+      }
+    } catch (error) {
+      setAuthError(formatPasswordAuthError(error));
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const handleResendClick = async () => {
+    setAuthError('');
+    setAuthInfo('');
+    setLoginLoading(true);
+    try {
+      await onResendVerification();
+      setAuthInfo(`Письмо повторно отправлено на ${ADMIN_LOGIN_EMAIL}.`);
+    } catch (error) {
+      setAuthError(formatPasswordAuthError(error));
+    } finally {
+      setLoginLoading(false);
     }
   };
 
@@ -342,24 +360,6 @@ export function AdminModal({
     }
   };
 
-  const handleAddAdmin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!isOwner || !authUser) return;
-    setPanelError('');
-    setSaving(true);
-    try {
-      await addAdminInFirestore(authUser, newAdminUid, newAdminEmail);
-      setNewAdminUid('');
-      setNewAdminEmail('');
-    } catch (error) {
-      setPanelError(
-        error instanceof Error ? error.message : 'Не удалось добавить администратора',
-      );
-    } finally {
-      setSaving(false);
-    }
-  };
-
   return (
     <AnimatePresence>
       {open && (
@@ -375,7 +375,7 @@ export function AdminModal({
             exit={{opacity: 0}}
             transition={{duration: 0.18}}
             onClick={onClose}
-            className="fixed inset-0 bg-black/45 backdrop-blur-[2px]"
+            className="fixed inset-0 bg-black/50"
           />
 
           <motion.div
@@ -428,48 +428,96 @@ export function AdminModal({
             {/* Content */}
             {!isFirestoreAdmin ? (
               <div className="p-5 sm:p-6 space-y-4 overflow-y-auto">
-                <p className="text-[14px] font-semibold text-neutral-600 leading-snug">
-                  Войдите через Google-аккаунт администратора, чтобы добавлять, редактировать и
-                  удалять товары напрямую в облачной базе Firebase Firestore. Все изменения сразу
-                  увидят все посетители сайта.
-                </p>
-
-                <button
-                  type="button"
-                  onClick={handleGoogleAuthClick}
-                  disabled={googleLoading}
-                  className="w-full min-h-[48px] py-3 px-5 rounded-full bg-[#141414] text-white text-[14px] sm:text-[15px] font-bold hover:bg-black active:scale-[0.98] transition-all inline-flex items-center justify-center gap-2.5 cursor-pointer disabled:opacity-50"
-                >
-                  <Database className="w-4 h-4 shrink-0" />
-                  <span>
-                    {googleLoading ? 'Подключение...' : 'Войти через Google'}
-                  </span>
-                </button>
-
-                {authUser && !isFirestoreAdmin && (
-                  <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200 space-y-2 text-[12px] font-semibold text-amber-900">
-                    <p>
-                      Вы вошли как <span className="font-extrabold">{authUser.email}</span>, но у
-                      этого аккаунта пока нет прав администратора.
+                {!authUser ? (
+                  <form onSubmit={handlePasswordSubmit} className="space-y-4">
+                    <p className="text-[14px] font-semibold text-neutral-600 leading-snug">
+                      Введите пароль администратора, чтобы добавлять, редактировать и удалять
+                      товары на сайте.
                     </p>
-                    <div className="flex items-center justify-between gap-2 bg-white/80 rounded-xl px-2.5 py-1.5 border border-amber-200">
-                      <span className="truncate font-mono text-[11px]">
-                        UID: {authUser.uid}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={handleCopyUid}
-                        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-[#141414] text-white text-[11px] font-bold cursor-pointer shrink-0"
+
+                    <div>
+                      <label
+                        htmlFor="admin-password-input"
+                        className="block text-[12px] font-bold text-[#141414] mb-1.5"
                       >
-                        {copiedUid ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                        <span>{copiedUid ? 'Скопировано' : 'Копировать UID'}</span>
-                      </button>
+                        Пароль
+                      </label>
+                      <div className="relative">
+                        <input
+                          id="admin-password-input"
+                          type={showPassword ? 'text' : 'password'}
+                          autoComplete="current-password"
+                          autoFocus
+                          required
+                          value={password}
+                          onChange={(e) => setPassword(e.target.value)}
+                          placeholder="Введите пароль"
+                          className="w-full px-4 py-3 pr-11 rounded-2xl border-[1.5px] border-[#1A1A1A] bg-white text-[15px] font-semibold text-[#141414] focus:outline-none focus:ring-2 focus:ring-black/15"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPassword((prev) => !prev)}
+                          aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full flex items-center justify-center text-neutral-600 hover:bg-neutral-100 cursor-pointer"
+                        >
+                          {showPassword ? (
+                            <EyeOff className="w-4 h-4" />
+                          ) : (
+                            <Eye className="w-4 h-4" />
+                          )}
+                        </button>
+                      </div>
                     </div>
-                    <p className="text-[11px] text-amber-800">
-                      Передайте этот UID владельцу ({BOOTSTRAPPED_ADMIN_EMAIL}), чтобы он выдал вам
-                      доступ в разделе «Администраторы».
-                    </p>
+
+                    <button
+                      type="submit"
+                      disabled={loginLoading}
+                      className="w-full min-h-[48px] py-3 px-5 rounded-full bg-[#141414] text-white text-[15px] font-bold hover:bg-black active:scale-[0.98] transition-all inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                    >
+                      <KeyRound className="w-4 h-4 shrink-0" />
+                      <span>{loginLoading ? 'Вход...' : 'Войти'}</span>
+                    </button>
+                  </form>
+                ) : !authUser.emailVerified ? (
+                  <div className="space-y-3">
+                    <div className="p-3.5 rounded-2xl bg-[#FAFAFA] border border-[#141414]/20 space-y-2 text-[13px] font-semibold text-[#141414]">
+                      <p>
+                        Пароль верный! Осталось одноразовое подтверждение почты{' '}
+                        <span className="font-extrabold">{authUser.email || ADMIN_LOGIN_EMAIL}</span>:
+                        перейдите по ссылке из письма, затем нажмите кнопку ниже.
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleCheckVerifiedClick}
+                      disabled={loginLoading}
+                      className="w-full min-h-[46px] py-2.5 px-5 rounded-full bg-[#141414] text-white text-[14px] font-bold hover:bg-black active:scale-[0.98] transition-all inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                    >
+                      <RefreshCw className="w-4 h-4 shrink-0" />
+                      <span>{loginLoading ? 'Проверка...' : 'Я подтвердил(а) почту — войти'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleResendClick}
+                      disabled={loginLoading}
+                      className="w-full min-h-[42px] py-2 px-4 rounded-full border-[1.5px] border-[#1A1A1A] bg-white text-[#141414] text-[13px] font-bold hover:bg-neutral-50 transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      Отправить письмо повторно
+                    </button>
                   </div>
+                ) : (
+                  <p className="p-3.5 rounded-2xl bg-[#FAFAFA] border border-[#141414]/20 text-[13px] font-semibold text-[#141414]">
+                    У текущей учётной записи нет прав администратора. Нажмите «Выйти» и войдите по
+                    паролю администратора.
+                  </p>
+                )}
+
+                {authInfo && (
+                  <p className="p-3 rounded-2xl bg-[#FAFAFA] border border-black/20 text-[12px] font-bold text-[#141414] leading-snug">
+                    {authInfo}
+                  </p>
                 )}
 
                 {authError && (
@@ -484,80 +532,12 @@ export function AdminModal({
             ) : (
               <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
                 {/* Database Sync Banner */}
-                <div className="flex flex-wrap items-center justify-between gap-2.5 px-3.5 py-2.5 rounded-2xl border border-black/15 bg-neutral-50 text-[12px] font-bold text-[#141414]">
+                <div className="flex flex-wrap items-center justify-between gap-2.5 px-3.5 py-2.5 rounded-2xl border border-black/15 bg-[#FAFAFA] text-[12px] font-bold text-[#141414]">
                   <div className="flex items-center gap-2 min-w-0">
                     <Database className="w-4 h-4 shrink-0" />
-                    <span className="truncate">
-                      Firebase Firestore подключена ({authUser?.email})
-                    </span>
+                    <span className="truncate">База товаров подключена</span>
                   </div>
-
-                  {isOwner && (
-                    <button
-                      type="button"
-                      onClick={() => setShowAdminsBox((prev) => !prev)}
-                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full border border-black/25 bg-white text-[11px] font-bold hover:bg-neutral-100 cursor-pointer whitespace-nowrap"
-                    >
-                      <UserPlus className="w-3.5 h-3.5" />
-                      <span>{showAdminsBox ? 'Скрыть админов' : 'Администраторы'}</span>
-                    </button>
-                  )}
                 </div>
-
-                {isOwner && showAdminsBox && (
-                  <div className="rounded-[22px] border-[1.5px] border-black/20 p-3.5 bg-neutral-50/70 space-y-3">
-                    <div className="text-[13px] font-extrabold text-[#141414]">
-                      Доступ к админ-панели (по Google UID)
-                    </div>
-                    <form onSubmit={handleAddAdmin} className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      <input
-                        type="text"
-                        required
-                        value={newAdminUid}
-                        onChange={(e) => setNewAdminUid(e.target.value)}
-                        placeholder="UID пользователя"
-                        className="px-3 py-2 rounded-xl border border-black/25 bg-white text-[12px] font-semibold focus:outline-none focus:border-black"
-                      />
-                      <input
-                        type="email"
-                        required
-                        value={newAdminEmail}
-                        onChange={(e) => setNewAdminEmail(e.target.value)}
-                        placeholder="Email Google"
-                        className="px-3 py-2 rounded-xl border border-black/25 bg-white text-[12px] font-semibold focus:outline-none focus:border-black"
-                      />
-                      <button
-                        type="submit"
-                        disabled={saving}
-                        className="px-3 py-2 rounded-xl bg-[#141414] text-white text-[12px] font-bold hover:bg-black cursor-pointer disabled:opacity-50"
-                      >
-                        Выдать доступ
-                      </button>
-                    </form>
-
-                    {adminsList.length > 0 && (
-                      <div className="space-y-1.5">
-                        {adminsList.map((adm) => (
-                          <div
-                            key={adm.uid}
-                            className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-xl bg-white border border-black/15 text-[12px]"
-                          >
-                            <span className="truncate font-semibold">
-                              {adm.email} <span className="text-neutral-400">({adm.uid})</span>
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => void removeAdminInFirestore(adm.uid)}
-                              className="text-red-600 font-bold hover:underline cursor-pointer shrink-0"
-                            >
-                              Удалить
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
 
                 {panelError && (
                   <div
@@ -724,16 +704,18 @@ export function AdminModal({
                           {!isEditing ? (
                             <div className="flex items-center justify-between gap-3 flex-wrap sm:flex-nowrap">
                               <div className="flex items-center gap-3 min-w-0 flex-1">
-                                <div className="w-14 h-12 rounded-xl bg-[#E3E3E3] flex items-center justify-center overflow-hidden shrink-0">
+                                <div className="w-14 h-12 rounded-xl bg-[#F4F4F4] border border-[#141414]/10 flex items-center justify-center overflow-hidden shrink-0">
                                   {item.imageUrl ? (
                                     <img
                                       src={item.imageUrl}
                                       alt={item.name || `Товар #${item.id}`}
+                                      loading="lazy"
+                                      decoding="async"
                                       referrerPolicy="no-referrer"
                                       className="w-full h-full object-cover"
                                     />
                                   ) : (
-                                    <PlaceholderStarIcon className="w-8 h-8 text-[#C7C7C7]" />
+                                    <PlaceholderStarIcon className="w-8 h-8 text-[#D0D0D0]" />
                                   )}
                                 </div>
 
