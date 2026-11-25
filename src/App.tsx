@@ -14,6 +14,9 @@ import {ReviewsBlock} from './components/ReviewsBlock';
 import {CartDrawer, CartEntry, FavoritesDrawer} from './components/ShopDrawers';
 import {DEFAULT_PRODUCTS, ProductItem} from './data/products';
 
+const FIREBASE_API_KEY = 'AIzaSyBvRjFdSMab_8G6OO9n0i7JOnprLjfT3hM';
+const FIREBASE_PROJECT_ID = 'vision-shop-2e31e';
+
 const FAVORITES_STORAGE_KEY = 'vision_shop_favorites_v1';
 const CART_STORAGE_KEY = 'vision_shop_cart_v1';
 
@@ -26,7 +29,7 @@ function loadSavedFavorites(): number[] {
       return parsed.filter((id): id is number => typeof id === 'number');
     }
   } catch {
-    // ignore storage errors
+    // ignore
   }
   return [];
 }
@@ -47,7 +50,7 @@ function loadSavedCart(): Record<number, number> {
       return cleaned;
     }
   } catch {
-    // ignore storage errors
+    // ignore
   }
   return {};
 }
@@ -63,36 +66,44 @@ export default function App() {
   const [adminModalOpen, setAdminModalOpen] = useState(false);
   const [quickEditId, setQuickEditId] = useState<number | null>(null);
 
-  // Fetch shared catalog and subscribe to real-time updates for all users
   useEffect(() => {
     let active = true;
 
-    fetch('/api/products')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: {products?: ProductItem[]} | null) => {
-        if (active && data && Array.isArray(data.products)) {
-          setProducts(data.products);
-        }
-      })
-      .catch(() => {
-        // Keep initial defaults if offline
-      });
-
-    const eventSource = new EventSource('/api/products/stream');
-    eventSource.addEventListener('products', (event: MessageEvent<string>) => {
+    async function fetchSharedProducts() {
       try {
-        const parsed = JSON.parse(event.data);
-        if (active && Array.isArray(parsed)) {
-          setProducts(parsed);
+        const url = https://googleapis.com{FIREBASE_PROJECT_ID}/databases/(default)/documents/products?key=${FIREBASE_API_KEY};
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (active && Array.isArray(data.documents)) {
+          const mapped: ProductItem[] = data.documents.map((doc: any) => {
+            const f = doc.fields || {};
+            const docId = Number(doc.name.split('/').pop());
+            return {
+              id: Number(f.id?.integerValue ?? f.id?.doubleValue ?? docId),
+              name: String(f.name?.stringValue ?? ''),
+              price: Number(f.price?.doubleValue ?? f.price?.integerValue ?? 0),
+              gemValue: Number(f.gemValue?.doubleValue ?? f.gemValue?.integerValue ?? 0),
+              imageUrl: String(f.imageUrl?.stringValue ?? ''),
+              rarity: (f.rarity?.stringValue ?? '') as any,
+            };
+          });
+          mapped.sort((a, b) => a.id - b.id);
+          if (mapped.length > 0) {
+            setProducts(mapped);
+          }
         }
       } catch {
-        // Ignore malformed event
+        // ignore network errors
       }
-    });
+    }
+
+    fetchSharedProducts();
+    const interval = window.setInterval(fetchSharedProducts, 10000);
 
     return () => {
       active = false;
-      eventSource.close();
+      window.clearInterval(interval);
     };
   }, []);
 
@@ -100,15 +111,14 @@ export default function App() {
     try {
       window.localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(favoriteIds));
     } catch {
-      // ignore storage errors
+      // ignore
     }
   }, [favoriteIds]);
-
   useEffect(() => {
     try {
       window.localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(cartQuantities));
     } catch {
-      // ignore storage errors
+      // ignore
     }
   }, [cartQuantities]);
 
@@ -232,7 +242,8 @@ export default function App() {
           setQuickEditId(null);
         }}
         adminToken={adminToken}
-        onAuthSuccess={(token) => setAdminToken(token)}
+        o
+nAuthSuccess={(token) => setAdminToken(token)}
         onLogout={() => setAdminToken(null)}
         products={products}
         onProductsUpdated={(next) => setProducts(next)}
@@ -241,3 +252,4 @@ export default function App() {
     </div>
   );
 }
+  
