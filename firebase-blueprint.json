@@ -1,0 +1,255 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Storefront catalog item displayed in Vision shop.",
+      "type": "object",
+      "properties": {
+        "productId": {
+          "type": "integer",
+          "description": "Numeric identifier of the product card."
+        },
+        "name": {
+          "type": "string",
+          "description": "Optional product title.",
+          "maxLength": 80
+        },
+        "price": {
+          "type": "number",
+          "description": "Product price in UAH."
+        },
+        "gemValue": {
+          "type": "number",
+          "description": "Gem value displayed on the product card."
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "Optional HTTPS image URL or base64 data image.",
+          "maxLength": 900000
+        },
+        "rarity": {
+          "type": "string",
+          "description": "Optional rarity badge code.",
+          "enum": ["", "N", "M", "R", "F"],
+          "maxLength": 1,
+          "pattern": "^(|N|M|R|F)$"
+        },
+        "visibility": {
+          "type": "string",
+          "description": "Catalog visibility status.",
+          "enum": ["public"],
+          "maxLength": 16,
+          "pattern": "^public$"
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "UID of the admin who created the product.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last-update timestamp."
+        }
+      },
+      "required": [
+        "productId",
+        "name",
+        "price",
+        "gemValue",
+        "imageUrl",
+        "rarity",
+        "visibility",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Authorized admin account entry.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the admin.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Verified email address of the admin.",
+          "maxLength": 254
+        },
+        "role": {
+          "type": "string",
+          "description": "Assigned role.",
+          "enum": ["admin"],
+          "maxLength": 16,
+          "pattern": "^admin$"
+        },
+        "addedBy": {
+          "type": "string",
+          "description": "UID of the bootstrapped admin who granted access.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        }
+      },
+      "required": ["uid", "email", "role", "addedBy", "createdAt"]
+    },
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "Non-PII root account record for a signed-in shopper.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "role": {
+          "type": "string",
+          "description": "Fixed non-privileged customer role.",
+          "enum": ["customer"],
+          "maxLength": 16,
+          "pattern": "^customer$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": ["uid", "role", "createdAt", "updatedAt"]
+    },
+    "UserPrivateProfile": {
+      "title": "UserPrivateProfile",
+      "description": "Isolated PII document for a signed-in user.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "User email address.",
+          "maxLength": 254
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User display name.",
+          "maxLength": 120
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": ["uid", "email", "displayName", "updatedAt"]
+    },
+    "FavoriteItem": {
+      "title": "FavoriteItem",
+      "description": "Saved favorite product reference for a user.",
+      "type": "object",
+      "properties": {
+        "productId": {
+          "type": "integer",
+          "description": "Referenced product numeric ID."
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the owner.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        }
+      },
+      "required": ["productId", "ownerId", "createdAt"]
+    },
+    "CartItem": {
+      "title": "CartItem",
+      "description": "Cart line item with quantity for a user.",
+      "type": "object",
+      "properties": {
+        "productId": {
+          "type": "integer",
+          "description": "Referenced product numeric ID."
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the owner.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "quantity": {
+          "type": "integer",
+          "description": "Item quantity in the cart (1 to 999)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": ["productId", "ownerId", "quantity", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Publicly readable storefront product catalog writable only by admins."
+    },
+    "/admins/{adminUid}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Admin authorization records managed by the bootstrapped admin."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserAccount" },
+      "description": "Non-PII shopper account parent document."
+    },
+    "/users/{userId}/private/{profileId}": {
+      "schema": { "$ref": "#/entities/UserPrivateProfile" },
+      "description": "Isolated PII profile document readable and writable only by the owner."
+    },
+    "/users/{userId}/favorites/{productId}": {
+      "schema": { "$ref": "#/entities/FavoriteItem" },
+      "description": "User favorite product records."
+    },
+    "/users/{userId}/cart/{productId}": {
+      "schema": { "$ref": "#/entities/CartItem" },
+      "description": "User shopping cart line items."
+    }
+  }
+}

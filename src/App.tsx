@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, {useEffect, useMemo, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useState} from 'react';
+import {type User, onAuthStateChanged, signInWithPopup, signOut} from 'firebase/auth';
 import {AdminModal} from './components/AdminModal';
 import {BackgroundScene} from './components/BackgroundScene';
 import {BottomDock} from './components/BottomDock';
@@ -13,9 +14,17 @@ import {ProductGrid} from './components/ProductGrid';
 import {ReviewsBlock} from './components/ReviewsBlock';
 import {CartDrawer, CartEntry, FavoritesDrawer} from './components/ShopDrawers';
 import {DEFAULT_PRODUCTS, ProductItem} from './data/products';
-
-const FIREBASE_API_KEY = 'AIzaSyBvRjFdSMab_8G6OO9n0i7JOnprLjfT3hM';
-const FIREBASE_PROJECT_ID = 'vision-shop-2e31e';
+import {auth, googleProvider} from './firebase';
+import {
+  checkIsFirestoreAdmin,
+  ensureUserAccount,
+  seedProductsIfEmpty,
+  setCartQtyInFirestore,
+  setFavoriteInFirestore,
+  subscribePublicProducts,
+  subscribeUserCart,
+  subscribeUserFavorites,
+} from './services/firestoreService';
 
 const FAVORITES_STORAGE_KEY = 'vision_shop_favorites_v1';
 const CART_STORAGE_KEY = 'vision_shop_cart_v1';
@@ -29,7 +38,7 @@ function loadSavedFavorites(): number[] {
       return parsed.filter((id): id is number => typeof id === 'number');
     }
   } catch {
-    // ignore
+    // ignore storage errors
   }
   return [];
 }
@@ -50,7 +59,7 @@ function loadSavedCart(): Record<number, number> {
       return cleaned;
     }
   } catch {
-    // ignore
+    // ignore storage errors
   }
   return {};
 }
@@ -58,86 +67,188 @@ function loadSavedCart(): Record<number, number> {
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('catalog');
   const [introFinished, setIntroFinished] = useState(false);
-  const [products, setProducts] = useState<ProductItem[]>(DEFAULT_PRODUCTS);
+
+  const [firestoreProducts, setFirestoreProducts] = useState<ProductItem[]>([]);
+  const [firestoreLoaded, setFirestoreLoaded] = useState(false);
+  const [firestoreSeeded, setFirestoreSeeded] = useState(false);
+
   const [favoriteIds, setFavoriteIds] = useState<number[]>(loadSavedFavorites);
   const [cartQuantities, setCartQuantities] = useState<Record<number, number>>(loadSavedCart);
   const [activeDrawer, setActiveDrawer] = useState<'favorites' | 'cart' | null>(null);
-  const [adminToken, setAdminToken] = useState<string | null>(null);
+
   const [adminModalOpen, setAdminModalOpen] = useState(false);
   const [quickEditId, setQuickEditId] = useState<number | null>(null);
 
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [isFirestoreAdmin, setIsFirestoreAdmin] = useState(false);
+
+  // Track Firebase Authentication state
   useEffect(() => {
-    let active = true;
-
-    async function fetchSharedProducts() {
-      try {
-        const url = https://googleapis.com{FIREBASE_PROJECT_ID}/databases/(default)/documents/products?key=${FIREBASE_API_KEY};
-        const res = await fetch(url);
-        if (!res.ok) return;
-        const data = await res.json();
-        if (active && Array.isArray(data.documents)) {
-          const mapped: ProductItem[] = data.documents.map((doc: any) => {
-            const f = doc.fields || {};
-            const docId = Number(doc.name.split('/').pop());
-            return {
-              id: Number(f.id?.integerValue ?? f.id?.doubleValue ?? docId),
-              name: String(f.name?.stringValue ?? ''),
-              price: Number(f.price?.doubleValue ?? f.price?.integerValue ?? 0),
-              gemValue: Number(f.gemValue?.doubleValue ?? f.gemValue?.integerValue ?? 0),
-              imageUrl: String(f.imageUrl?.stringValue ?? ''),
-              rarity: (f.rarity?.stringValue ?? '') as any,
-            };
-          });
-          mapped.sort((a, b) => a.id - b.id);
-          if (mapped.length > 0) {
-            setProducts(mapped);
-          }
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      setAuthUser(user);
+      if (user && user.emailVerified) {
+        try {
+          await ensureUserAccount(user);
+          const adminStatus = await checkIsFirestoreAdmin(user);
+          setIsFirestoreAdmin(adminStatus);
+        } catch (err) {
+          console.error('Auth initialization error:', err);
+          setIsFirestoreAdmin(false);
         }
-      } catch {
-        // ignore network errors
+      } else {
+        setIsFirestoreAdmin(false);
       }
-    }
+      setAuthReady(true);
+    });
+    return () => unsub();
+  }, []);
 
-    fetchSharedProducts();
-    const interval = window.setInterval(fetchSharedProducts, 10000);
+  // Subscribe to public Firestore product catalog in real time (serverless, works on Vercel)
+  useEffect(() => {
+    const unsub = subscribePublicProducts(
+      (items) => {
+        setFirestoreProducts(items);
+        setFirestoreLoaded(true);
+        if (items.length > 0) {
+          setFirestoreSeeded(true);
+        }
+      },
+      (error) => {
+        console.warn('Firestore catalog listener fallback:', error.message);
+        setFirestoreLoaded(true);
+      },
+    );
+    return () => unsub();
+  }, []);
+
+  // Auto-seed Firestore catalog on first admin sign-in when database is empty
+  useEffect(() => {
+    if (!authReady || !isFirestoreAdmin || !authUser || !firestoreLoaded) return;
+    if (firestoreProducts.length === 0 && !firestoreSeeded) {
+      void seedProductsIfEmpty(authUser, DEFAULT_PRODUCTS).then((seeded) => {
+        if (seeded) {
+          setFirestoreSeeded(true);
+        }
+      });
+    }
+  }, [
+    authReady,
+    isFirestoreAdmin,
+    authUser,
+    firestoreLoaded,
+    firestoreProducts.length,
+    firestoreSeeded,
+  ]);
+
+  // Attach user-specific favorites and cart listeners ONLY when auth is ready and user is authenticated
+  useEffect(() => {
+    if (!authReady || !authUser || !authUser.emailVerified) return;
+
+    let initialFavSync = true;
+    let initialCartSync = true;
+
+    const unsubFav = subscribeUserFavorites(authUser.uid, (cloudIds) => {
+      if (initialFavSync) {
+        initialFavSync = false;
+        if (cloudIds.length === 0) {
+          setFavoriteIds((prev) => prev);
+          return;
+        }
+      }
+      setFavoriteIds(cloudIds);
+    });
+
+    const unsubCart = subscribeUserCart(authUser.uid, (cloudCart) => {
+      if (initialCartSync) {
+        initialCartSync = false;
+        if (Object.keys(cloudCart).length === 0) {
+          setCartQuantities((prev) => prev);
+          return;
+        }
+      }
+      setCartQuantities(cloudCart);
+    });
 
     return () => {
-      active = false;
-      window.clearInterval(interval);
+      unsubFav();
+      unsubCart();
     };
-  }, []);
+  }, [authReady, authUser]);
+
+  const products = useMemo(() => {
+    if (firestoreProducts.length > 0 || firestoreSeeded) {
+      return firestoreProducts;
+    }
+    return DEFAULT_PRODUCTS;
+  }, [firestoreProducts, firestoreSeeded]);
+
+  const firestoreProductIds = useMemo(
+    () => new Set(firestoreProducts.map((p) => p.id)),
+    [firestoreProducts],
+  );
 
   useEffect(() => {
     try {
       window.localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(favoriteIds));
     } catch {
-      // ignore
+      // ignore storage errors
     }
   }, [favoriteIds]);
+
   useEffect(() => {
     try {
       window.localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(cartQuantities));
     } catch {
-      // ignore
+      // ignore storage errors
     }
   }, [cartQuantities]);
 
+  const handleGoogleSignIn = useCallback(async () => {
+    await signInWithPopup(auth, googleProvider);
+  }, []);
+
+  const handleGoogleSignOut = useCallback(async () => {
+    await signOut(auth);
+    setIsFirestoreAdmin(false);
+  }, []);
+
+  const handleSeedFirestore = useCallback(async () => {
+    if (!authUser || !isFirestoreAdmin) return;
+    await seedProductsIfEmpty(authUser, DEFAULT_PRODUCTS);
+    setFirestoreSeeded(true);
+  }, [authUser, isFirestoreAdmin]);
+
   const handleToggleFavorite = (id: number) => {
+    const willBeFavorite = !favoriteIds.includes(id);
     setFavoriteIds((prev) =>
-      prev.includes(id) ? prev.filter((itemId) => itemId !== id) : [...prev, id],
+      willBeFavorite ? [...prev, id] : prev.filter((itemId) => itemId !== id),
     );
+
+    if (authUser && authUser.emailVerified && firestoreProductIds.has(id)) {
+      void setFavoriteInFirestore(authUser.uid, id, willBeFavorite).catch((err) => {
+        console.error('Failed to sync favorite to Firestore:', err);
+      });
+    }
   };
 
   const handleAddToCart = (product: ProductItem) => {
+    const nextQty = (cartQuantities[product.id] ?? 0) + 1;
     setCartQuantities((prev) => ({
       ...prev,
-      [product.id]: (prev[product.id] ?? 0) + 1,
+      [product.id]: nextQty,
     }));
+
+    if (authUser && authUser.emailVerified && firestoreProductIds.has(product.id)) {
+      void setCartQtyInFirestore(authUser.uid, product.id, nextQty).catch((err) => {
+        console.error('Failed to sync cart item to Firestore:', err);
+      });
+    }
   };
 
   const handleUpdateCartQty = (id: number, delta: number) => {
+    const nextQty = (cartQuantities[id] ?? 0) + delta;
     setCartQuantities((prev) => {
-      const nextQty = (prev[id] ?? 0) + delta;
       if (nextQty <= 0) {
         const copy = {...prev};
         delete copy[id];
@@ -145,6 +256,12 @@ export default function App() {
       }
       return {...prev, [id]: nextQty};
     });
+
+    if (authUser && authUser.emailVerified && firestoreProductIds.has(id)) {
+      void setCartQtyInFirestore(authUser.uid, id, nextQty).catch((err) => {
+        console.error('Failed to update cart item in Firestore:', err);
+      });
+    }
   };
 
   const handleRemoveCartItem = (id: number) => {
@@ -153,6 +270,12 @@ export default function App() {
       delete copy[id];
       return copy;
     });
+
+    if (authUser && authUser.emailVerified && firestoreProductIds.has(id)) {
+      void setCartQtyInFirestore(authUser.uid, id, 0).catch((err) => {
+        console.error('Failed to remove cart item in Firestore:', err);
+      });
+    }
   };
 
   const favoriteItems = useMemo(
@@ -186,7 +309,7 @@ export default function App() {
         <HeaderBar
           activeTab={activeTab}
           onTabChange={setActiveTab}
-          isAdmin={Boolean(adminToken)}
+          isAdmin={isFirestoreAdmin}
           onOpenAdmin={() => {
             setQuickEditId(null);
             setAdminModalOpen(true);
@@ -200,7 +323,7 @@ export default function App() {
               favoriteIds={favoriteIds}
               onToggleFavorite={handleToggleFavorite}
               onAddToCart={handleAddToCart}
-              isAdmin={Boolean(adminToken)}
+              isAdmin={isFirestoreAdmin}
               onQuickEdit={(id) => {
                 setQuickEditId(id);
                 setAdminModalOpen(true);
@@ -225,6 +348,9 @@ export default function App() {
         items={favoriteItems}
         onToggleFavorite={handleToggleFavorite}
         onAddToCart={handleAddToCart}
+        authUser={authUser}
+        onGoogleSignIn={handleGoogleSignIn}
+        onGoogleSignOut={handleGoogleSignOut}
       />
 
       <CartDrawer
@@ -233,6 +359,9 @@ export default function App() {
         entries={cartEntries}
         onUpdateQty={handleUpdateCartQty}
         onRemoveItem={handleRemoveCartItem}
+        authUser={authUser}
+        onGoogleSignIn={handleGoogleSignIn}
+        onGoogleSignOut={handleGoogleSignOut}
       />
 
       <AdminModal
@@ -241,15 +370,17 @@ export default function App() {
           setAdminModalOpen(false);
           setQuickEditId(null);
         }}
-        adminToken={adminToken}
-        o
-nAuthSuccess={(token) => setAdminToken(token)}
-        onLogout={() => setAdminToken(null)}
+        authUser={authUser}
+        isFirestoreAdmin={isFirestoreAdmin}
+        onGoogleSignIn={handleGoogleSignIn}
+        onLogout={() => {
+          void handleGoogleSignOut();
+        }}
+        firestoreProductIds={firestoreProductIds}
+        onSeedFirestore={handleSeedFirestore}
         products={products}
-        onProductsUpdated={(next) => setProducts(next)}
         initialEditProductId={quickEditId}
       />
     </div>
   );
 }
-  

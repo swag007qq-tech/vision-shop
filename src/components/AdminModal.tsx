@@ -1,7 +1,10 @@
 import React, {useEffect, useState} from 'react';
+import {type User} from 'firebase/auth';
 import {AnimatePresence, motion} from 'motion/react';
 import {
   Check,
+  Copy,
+  Database,
   ImagePlus,
   KeyRound,
   LogOut,
@@ -9,20 +12,33 @@ import {
   Plus,
   ShieldCheck,
   Trash2,
+  UserPlus,
   X,
 } from 'lucide-react';
 import {ProductItem, RARITY_OPTIONS, RarityCode} from '../data/products';
+import {BOOTSTRAPPED_ADMIN_EMAIL} from '../firebase';
+import {
+  type AdminRecord,
+  addAdminInFirestore,
+  createProductInFirestore,
+  deleteProductFromFirestore,
+  removeAdminInFirestore,
+  subscribeAdmins,
+  updateProductInFirestore,
+} from '../services/firestoreService';
 import {RarityBadge} from './RarityBadge';
 import {GemIcon, PlaceholderStarIcon} from './VisionIllustrations';
 
 interface AdminModalProps {
   open: boolean;
   onClose: () => void;
-  adminToken: string | null;
-  onAuthSuccess: (token: string) => void;
+  authUser: User | null;
+  isFirestoreAdmin: boolean;
+  onGoogleSignIn: () => Promise<void>;
   onLogout: () => void;
+  firestoreProductIds: Set<number>;
+  onSeedFirestore: () => Promise<void>;
   products: ProductItem[];
-  onProductsUpdated: (products: ProductItem[]) => void;
   initialEditProductId?: number | null;
 }
 
@@ -41,6 +57,21 @@ const EMPTY_FORM: ProductFormState = {
   imageUrl: '',
   rarity: '',
 };
+
+function formatFirebaseAuthError(error: unknown): string {
+  const msg = error instanceof Error ? error.message : String(error);
+  if (msg.includes('auth/unauthorized-domain')) {
+    const host = typeof window !== 'undefined' ? window.location.hostname : '';
+    return `Домен «${host}» не добавлен в Firebase. Откройте Firebase Console → Authentication → Settings → Authorized domains и добавьте этот домен.`;
+  }
+  if (msg.includes('auth/popup-closed-by-user')) {
+    return 'Окно входа закрыто до завершения авторизации.';
+  }
+  if (msg.includes('auth/popup-blocked')) {
+    return 'Браузер заблокировал всплывающее окно входа. Разрешите всплывающие окна для сайта.';
+  }
+  return msg || 'Не удалось выполнить вход через Google';
+}
 
 function RaritySelector({
   value,
@@ -95,17 +126,18 @@ function RaritySelector({
 export function AdminModal({
   open,
   onClose,
-  adminToken,
-  onAuthSuccess,
+  authUser,
+  isFirestoreAdmin,
+  onGoogleSignIn,
   onLogout,
+  firestoreProductIds,
+  onSeedFirestore,
   products,
-  onProductsUpdated,
   initialEditProductId = null,
 }: AdminModalProps) {
-  const [configured, setConfigured] = useState<boolean | null>(null);
-  const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
-  const [authLoading, setAuthLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const [copiedUid, setCopiedUid] = useState(false);
 
   const [showAddForm, setShowAddForm] = useState(false);
   const [addForm, setAddForm] = useState<ProductFormState>(EMPTY_FORM);
@@ -114,6 +146,12 @@ export function AdminModal({
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [panelError, setPanelError] = useState('');
   const [saving, setSaving] = useState(false);
+
+  const isOwner = Boolean(authUser?.emailVerified && authUser.email === BOOTSTRAPPED_ADMIN_EMAIL);
+  const [showAdminsBox, setShowAdminsBox] = useState(false);
+  const [adminsList, setAdminsList] = useState<AdminRecord[]>([]);
+  const [newAdminUid, setNewAdminUid] = useState('');
+  const [newAdminEmail, setNewAdminEmail] = useState('');
 
   useEffect(() => {
     if (!open) return;
@@ -134,18 +172,18 @@ export function AdminModal({
         });
       }
     }
+  }, [open, initialEditProductId, products]);
 
-    if (!adminToken) {
-      fetch('/api/admin/status')
-        .then((res) => res.json())
-        .then((data: {configured?: boolean}) => {
-          setConfigured(Boolean(data.configured));
-        })
-        .catch(() => {
-          setConfigured(true);
-        });
-    }
-  }, [open, adminToken, initialEditProductId, products]);
+  useEffect(() => {
+    if (!open || !isOwner) return;
+    const unsub = subscribeAdmins(
+      (list) => setAdminsList(list),
+      () => {
+        // ignore listener warnings when closing
+      },
+    );
+    return () => unsub();
+  }, [open, isOwner]);
 
   useEffect(() => {
     if (!open) return;
@@ -156,35 +194,27 @@ export function AdminModal({
     return () => window.removeEventListener('keydown', handleKey);
   }, [open, onClose]);
 
-  const handleAuthSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleGoogleAuthClick = async () => {
     setAuthError('');
-    const trimmed = password.trim();
-    if (!trimmed) {
-      setAuthError('Введите пароль');
-      return;
-    }
-
-    setAuthLoading(true);
+    setPanelError('');
+    setGoogleLoading(true);
     try {
-      const endpoint = configured === false ? '/api/admin/claim' : '/api/admin/login';
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({password: trimmed}),
-      });
-      const data = (await res.json()) as {token?: string; error?: string};
-      if (!res.ok || !data.token) {
-        setAuthError(data.error || 'Не удалось войти');
-        return;
-      }
-      setPassword('');
-      setConfigured(true);
-      onAuthSuccess(data.token);
-    } catch {
-      setAuthError('Ошибка соединения с сервером');
+      await onGoogleSignIn();
+    } catch (error) {
+      setAuthError(formatFirebaseAuthError(error));
     } finally {
-      setAuthLoading(false);
+      setGoogleLoading(false);
+    }
+  };
+
+  const handleCopyUid = async () => {
+    if (!authUser?.uid) return;
+    try {
+      await navigator.clipboard.writeText(authUser.uid);
+      setCopiedUid(true);
+      window.setTimeout(() => setCopiedUid(false), 1600);
+    } catch {
+      // ignore clipboard errors
     }
   };
 
@@ -198,8 +228,8 @@ export function AdminModal({
       setPanelError('Поддерживаются только PNG, JPG, WEBP или GIF');
       return;
     }
-    if (file.size > 1_000_000) {
-      setPanelError('Размер изображения не должен превышать 1 МБ');
+    if (file.size > 600_000) {
+      setPanelError('Размер изображения не должен превышать 600 КБ');
       return;
     }
     setPanelError('');
@@ -214,7 +244,7 @@ export function AdminModal({
 
   const handleCreateProduct = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!adminToken) return;
+    if (!isFirestoreAdmin || !authUser) return;
     setPanelError('');
 
     const priceNum = Number(addForm.price.replace(',', '.'));
@@ -228,44 +258,33 @@ export function AdminModal({
       return;
     }
 
+    const payload = {
+      name: addForm.name.trim(),
+      price: priceNum,
+      gemValue: gemNum,
+      imageUrl: addForm.imageUrl.trim(),
+      rarity: addForm.rarity,
+    };
+
     setSaving(true);
     try {
-      const res = await fetch('/api/products', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${adminToken}`,
-        },
-        body: JSON.stringify({
-          name: addForm.name.trim(),
-          price: priceNum,
-          gemValue: gemNum,
-          imageUrl: addForm.imageUrl.trim(),
-          rarity: addForm.rarity,
-        }),
-      });
-      const data = (await res.json()) as {products?: ProductItem[]; error?: string};
-      if (res.status === 401) {
-        onLogout();
-        setAuthError('Сессия истекла, войдите снова');
-        return;
+      if (firestoreProductIds.size === 0 && products.length > 0) {
+        await onSeedFirestore();
       }
-      if (!res.ok || !data.products) {
-        setPanelError(data.error || 'Не удалось добавить товар');
-        return;
-      }
-      onProductsUpdated(data.products);
+      await createProductInFirestore(authUser, products, payload);
       setAddForm(EMPTY_FORM);
       setShowAddForm(false);
-    } catch {
-      setPanelError('Ошибка сети при сохранении товара');
+    } catch (error) {
+      setPanelError(
+        error instanceof Error ? error.message : 'Ошибка при сохранении товара в базу',
+      );
     } finally {
       setSaving(false);
     }
   };
 
   const handleSaveEdit = async (id: number) => {
-    if (!adminToken) return;
+    if (!isFirestoreAdmin || !authUser) return;
     setPanelError('');
 
     const priceNum = Number(editForm.price.replace(',', '.'));
@@ -279,67 +298,63 @@ export function AdminModal({
       return;
     }
 
+    const payload = {
+      name: editForm.name.trim(),
+      price: priceNum,
+      gemValue: gemNum,
+      imageUrl: editForm.imageUrl.trim(),
+      rarity: editForm.rarity,
+    };
+
     setSaving(true);
     try {
-      const res = await fetch(`/api/products/${id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${adminToken}`,
-        },
-        body: JSON.stringify({
-          name: editForm.name.trim(),
-          price: priceNum,
-          gemValue: gemNum,
-          imageUrl: editForm.imageUrl.trim(),
-          rarity: editForm.rarity,
-        }),
-      });
-      const data = (await res.json()) as {products?: ProductItem[]; error?: string};
-      if (res.status === 401) {
-        onLogout();
-        setAuthError('Сессия истекла, войдите снова');
-        return;
+      if (firestoreProductIds.size === 0 && products.length > 0) {
+        await onSeedFirestore();
       }
-      if (!res.ok || !data.products) {
-        setPanelError(data.error || 'Не удалось обновить товар');
-        return;
-      }
-      onProductsUpdated(data.products);
+      await updateProductInFirestore(id, payload);
       setEditingId(null);
-    } catch {
-      setPanelError('Ошибка сети при обновлении товара');
+    } catch (error) {
+      setPanelError(
+        error instanceof Error ? error.message : 'Ошибка при обновлении товара в базе',
+      );
     } finally {
       setSaving(false);
     }
   };
 
   const handleDeleteProduct = async (id: number) => {
-    if (!adminToken) return;
+    if (!isFirestoreAdmin || !authUser) return;
     setPanelError('');
     setSaving(true);
     try {
-      const res = await fetch(`/api/products/${id}`, {
-        method: 'DELETE',
-        headers: {
-          Authorization: `Bearer ${adminToken}`,
-        },
-      });
-      const data = (await res.json()) as {products?: ProductItem[]; error?: string};
-      if (res.status === 401) {
-        onLogout();
-        setAuthError('Сессия истекла, войдите снова');
-        return;
+      if (firestoreProductIds.size === 0 && products.length > 0) {
+        await onSeedFirestore();
       }
-      if (!res.ok || !data.products) {
-        setPanelError(data.error || 'Не удалось удалить товар');
-        return;
-      }
-      onProductsUpdated(data.products);
+      await deleteProductFromFirestore(id);
       setConfirmDeleteId(null);
       if (editingId === id) setEditingId(null);
-    } catch {
-      setPanelError('Ошибка сети при удалении товара');
+    } catch (error) {
+      setPanelError(
+        error instanceof Error ? error.message : 'Ошибка при удалении товара из базы',
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleAddAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isOwner || !authUser) return;
+    setPanelError('');
+    setSaving(true);
+    try {
+      await addAdminInFirestore(authUser, newAdminUid, newAdminEmail);
+      setNewAdminUid('');
+      setNewAdminEmail('');
+    } catch (error) {
+      setPanelError(
+        error instanceof Error ? error.message : 'Не удалось добавить администратора',
+      );
     } finally {
       setSaving(false);
     }
@@ -369,26 +384,26 @@ export function AdminModal({
             exit={{opacity: 0, scale: 0.96, y: 12}}
             transition={{duration: 0.2, ease: [0.16, 1, 0.3, 1]}}
             className={`relative z-10 w-full ${
-              adminToken ? 'max-w-[660px]' : 'max-w-[420px]'
+              isFirestoreAdmin ? 'max-w-[660px]' : 'max-w-[440px]'
             } max-h-[90vh] bg-white border-[2px] border-[#141414] rounded-[28px] sm:rounded-[34px] shadow-2xl flex flex-col overflow-hidden`}
           >
             {/* Header */}
             <div className="flex items-center justify-between gap-3 px-4 sm:px-6 py-4 border-b border-black/10">
               <div className="flex items-center gap-2.5 min-w-0">
                 <span className="w-9 h-9 rounded-full bg-[#141414] text-white flex items-center justify-center shrink-0">
-                  {adminToken ? (
+                  {isFirestoreAdmin ? (
                     <ShieldCheck className="w-5 h-5" />
                   ) : (
                     <KeyRound className="w-4 h-4" />
                   )}
                 </span>
                 <h2 className="text-[17px] sm:text-[20px] font-extrabold text-[#141414] truncate">
-                  {adminToken ? 'Админ-панель' : 'Вход администратора'}
+                  {isFirestoreAdmin ? 'Админ-панель' : 'Вход администратора'}
                 </h2>
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
-                {adminToken && (
+                {authUser && (
                   <button
                     type="button"
                     onClick={onLogout}
@@ -411,58 +426,139 @@ export function AdminModal({
             </div>
 
             {/* Content */}
-            {!adminToken ? (
-              <form onSubmit={handleAuthSubmit} className="p-5 sm:p-6 space-y-4">
-                {configured === false ? (
-                  <div className="p-3.5 rounded-2xl bg-neutral-100 border border-black/15 text-[13px] font-semibold text-[#141414] leading-snug">
-                    Первый вход: задайте пароль администратора (минимум 6 символов). После этого
-                    доступ к редактированию откроется для всех, кто введёт этот пароль.
+            {!isFirestoreAdmin ? (
+              <div className="p-5 sm:p-6 space-y-4 overflow-y-auto">
+                <p className="text-[14px] font-semibold text-neutral-600 leading-snug">
+                  Войдите через Google-аккаунт администратора, чтобы добавлять, редактировать и
+                  удалять товары напрямую в облачной базе Firebase Firestore. Все изменения сразу
+                  увидят все посетители сайта.
+                </p>
+
+                <button
+                  type="button"
+                  onClick={handleGoogleAuthClick}
+                  disabled={googleLoading}
+                  className="w-full min-h-[48px] py-3 px-5 rounded-full bg-[#141414] text-white text-[14px] sm:text-[15px] font-bold hover:bg-black active:scale-[0.98] transition-all inline-flex items-center justify-center gap-2.5 cursor-pointer disabled:opacity-50"
+                >
+                  <Database className="w-4 h-4 shrink-0" />
+                  <span>
+                    {googleLoading ? 'Подключение...' : 'Войти через Google'}
+                  </span>
+                </button>
+
+                {authUser && !isFirestoreAdmin && (
+                  <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200 space-y-2 text-[12px] font-semibold text-amber-900">
+                    <p>
+                      Вы вошли как <span className="font-extrabold">{authUser.email}</span>, но у
+                      этого аккаунта пока нет прав администратора.
+                    </p>
+                    <div className="flex items-center justify-between gap-2 bg-white/80 rounded-xl px-2.5 py-1.5 border border-amber-200">
+                      <span className="truncate font-mono text-[11px]">
+                        UID: {authUser.uid}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleCopyUid}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-[#141414] text-white text-[11px] font-bold cursor-pointer shrink-0"
+                      >
+                        {copiedUid ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                        <span>{copiedUid ? 'Скопировано' : 'Копировать UID'}</span>
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-amber-800">
+                      Передайте этот UID владельцу ({BOOTSTRAPPED_ADMIN_EMAIL}), чтобы он выдал вам
+                      доступ в разделе «Администраторы».
+                    </p>
                   </div>
-                ) : (
-                  <p className="text-[14px] font-semibold text-neutral-600">
-                    Введите пароль администратора, чтобы добавлять, редактировать и удалять товары
-                    на всём сайте.
-                  </p>
                 )}
 
-                <div>
-                  <label
-                    htmlFor="admin-passcode-input"
-                    className="block text-[13px] font-bold text-[#141414] mb-1.5"
-                  >
-                    {configured === false ? 'Новый пароль администратора' : 'Пароль'}
-                  </label>
-                  <input
-                    id="admin-passcode-input"
-                    type="password"
-                    autoFocus
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Введите пароль..."
-                    className="w-full px-4 py-3 rounded-2xl border-[1.5px] border-[#1A1A1A] text-[15px] font-semibold text-[#141414] focus:outline-none focus:ring-2 focus:ring-black"
-                  />
-                </div>
-
                 {authError && (
-                  <p role="alert" className="text-[13px] font-bold text-red-600">
+                  <p
+                    role="alert"
+                    className="p-3 rounded-2xl bg-red-50 border border-red-200 text-[12px] font-bold text-red-700 leading-snug"
+                  >
                     {authError}
                   </p>
                 )}
-
-                <button
-                  type="submit"
-                  disabled={authLoading || configured === null}
-                  className="w-full min-h-[46px] py-3 px-5 rounded-full bg-[#141414] text-white text-[15px] font-bold hover:bg-black active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
-                >
-                  {authLoading
-                    ? 'Проверка...'
-                    : configured === false
-                      ? 'Сохранить пароль и войти'
-                      : 'Войти'}
-                </button>
-              </form>
+              </div>
             ) : (
               <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
+                {/* Database Sync Banner */}
+                <div className="flex flex-wrap items-center justify-between gap-2.5 px-3.5 py-2.5 rounded-2xl border border-black/15 bg-neutral-50 text-[12px] font-bold text-[#141414]">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Database className="w-4 h-4 shrink-0" />
+                    <span className="truncate">
+                      Firebase Firestore подключена ({authUser?.email})
+                    </span>
+                  </div>
+
+                  {isOwner && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAdminsBox((prev) => !prev)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full border border-black/25 bg-white text-[11px] font-bold hover:bg-neutral-100 cursor-pointer whitespace-nowrap"
+                    >
+                      <UserPlus className="w-3.5 h-3.5" />
+                      <span>{showAdminsBox ? 'Скрыть админов' : 'Администраторы'}</span>
+                    </button>
+                  )}
+                </div>
+
+                {isOwner && showAdminsBox && (
+                  <div className="rounded-[22px] border-[1.5px] border-black/20 p-3.5 bg-neutral-50/70 space-y-3">
+                    <div className="text-[13px] font-extrabold text-[#141414]">
+                      Доступ к админ-панели (по Google UID)
+                    </div>
+                    <form onSubmit={handleAddAdmin} className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <input
+                        type="text"
+                        required
+                        value={newAdminUid}
+                        onChange={(e) => setNewAdminUid(e.target.value)}
+                        placeholder="UID пользователя"
+                        className="px-3 py-2 rounded-xl border border-black/25 bg-white text-[12px] font-semibold focus:outline-none focus:border-black"
+                      />
+                      <input
+                        type="email"
+                        required
+                        value={newAdminEmail}
+                        onChange={(e) => setNewAdminEmail(e.target.value)}
+                        placeholder="Email Google"
+                        className="px-3 py-2 rounded-xl border border-black/25 bg-white text-[12px] font-semibold focus:outline-none focus:border-black"
+                      />
+                      <button
+                        type="submit"
+                        disabled={saving}
+                        className="px-3 py-2 rounded-xl bg-[#141414] text-white text-[12px] font-bold hover:bg-black cursor-pointer disabled:opacity-50"
+                      >
+                        Выдать доступ
+                      </button>
+                    </form>
+
+                    {adminsList.length > 0 && (
+                      <div className="space-y-1.5">
+                        {adminsList.map((adm) => (
+                          <div
+                            key={adm.uid}
+                            className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-xl bg-white border border-black/15 text-[12px]"
+                          >
+                            <span className="truncate font-semibold">
+                              {adm.email} <span className="text-neutral-400">({adm.uid})</span>
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => void removeAdminInFirestore(adm.uid)}
+                              className="text-red-600 font-bold hover:underline cursor-pointer shrink-0"
+                            >
+                              Удалить
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {panelError && (
                   <div
                     role="alert"
