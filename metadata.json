@@ -1,0 +1,6 @@
+{
+  "name": "Vision shop",
+  "description": "Адаптивный монохромный интерфейс магазина Vision shop для любых устройств.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
