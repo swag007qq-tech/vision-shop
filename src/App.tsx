@@ -167,10 +167,11 @@ export default function App() {
   }, [cartQuantities]);
 
   const handlePasswordSignIn = useCallback(async (password: string) => {
+    const trimmed = password.trim();
     const response = await fetch('/api/admin/login', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({password}),
+      body: JSON.stringify({password: trimmed}),
     });
     const data = (await response.json().catch(() => ({}))) as {
       token?: string;
@@ -180,6 +181,11 @@ export default function App() {
       if (response.status === 409) {
         setAdminConfigured(false);
       }
+      if (response.status === 404 || response.status === 405) {
+        throw new Error(
+          'Сервер авторизации (/api/admin/login) недоступен на текущем статическом хостинге. Запустите сервер Node (npm start) с переменной ADMIN_PASSCODE.',
+        );
+      }
       throw new Error(data.error || 'Неверный пароль администратора');
     }
     setAdminConfigured(true);
@@ -187,10 +193,11 @@ export default function App() {
   }, []);
 
   const handleClaimPassword = useCallback(async (password: string) => {
+    const trimmed = password.trim();
     const response = await fetch('/api/admin/claim', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({password}),
+      body: JSON.stringify({password: trimmed}),
     });
     const data = (await response.json().catch(() => ({}))) as {
       token?: string;
@@ -199,6 +206,11 @@ export default function App() {
     if (!response.ok || !data.token) {
       if (response.status === 409) {
         setAdminConfigured(true);
+      }
+      if (response.status === 404 || response.status === 405) {
+        throw new Error(
+          'Сервер настройки пароля (/api/admin/claim) недоступен на статическом хостинге. Запустите сервер Node (npm start) с переменной ADMIN_PASSCODE.',
+        );
       }
       throw new Error(data.error || 'Не удалось сохранить пароль администратора');
     }
