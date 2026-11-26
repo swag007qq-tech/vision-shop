@@ -3,10 +3,21 @@ import {getAuth} from 'firebase/auth';
 import {doc, getDocFromServer, getFirestore} from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
+const resolvedProjectId = (
+  import.meta.env.VITE_FIREBASE_PROJECT_ID || firebaseConfig.projectId
+).trim();
+const rawAuthDomain = (
+  import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfig.authDomain
+).trim();
+const resolvedAuthDomain =
+  rawAuthDomain && !rawAuthDomain.startsWith('://') && rawAuthDomain.includes('.')
+    ? rawAuthDomain
+    : `${resolvedProjectId}.firebaseapp.com`;
+
 const resolvedConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || firebaseConfig.apiKey,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfig.authDomain,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || firebaseConfig.projectId,
+  authDomain: resolvedAuthDomain,
+  projectId: resolvedProjectId,
   storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || firebaseConfig.storageBucket,
   messagingSenderId:
     import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseConfig.messagingSenderId,
