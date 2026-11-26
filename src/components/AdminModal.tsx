@@ -1,10 +1,7 @@
 import React, {useEffect, useState} from 'react';
-import {type User} from 'firebase/auth';
 import {AnimatePresence, motion} from 'motion/react';
 import {
-  Activity,
   Check,
-  Database,
   Eye,
   EyeOff,
   ImagePlus,
@@ -12,7 +9,6 @@ import {
   LogOut,
   Pencil,
   Plus,
-  RefreshCw,
   ShieldCheck,
   Trash2,
   X,
@@ -26,21 +22,14 @@ import {
   toggleRarityToken,
 } from '../data/products';
 import {
-  ADMIN_LOGIN_EMAIL,
   DB_OPERATION_TIMEOUT_MS,
   FIREBASE_TARGET_INFO,
   SCHEMA_LIMITS,
-  auth,
   withTimeout,
 } from '../firebase';
 import {
-  type RtdbDiagnosticEntry,
-  clearRtdbDiagnostics,
   createProductInRtdb,
   deleteProductFromRtdb,
-  getAdminIdToken,
-  refreshCatalogFromRtdb,
-  subscribeRtdbDiagnostics,
   updateProductInRtdb,
 } from '../services/realtimeDbService';
 import {RarityBadge, SingleRarityIcon} from './RarityBadge';
@@ -105,9 +94,10 @@ function compressImageFileToBase64(file: File): Promise<string> {
 interface AdminModalProps {
   open: boolean;
   onClose: () => void;
-  authUser: User | null;
   isAdmin: boolean;
+  adminConfigured: boolean;
   onPasswordSignIn: (password: string) => Promise<void>;
+  onClaimPassword: (password: string) => Promise<void>;
   onLogout: () => void;
   dbProductIds: Set<number>;
   dbReadError?: string;
@@ -171,43 +161,18 @@ function extractReadableErrorDetails(error: unknown): ParsedErrorDetails {
 
 function formatPasswordAuthError(error: unknown): string {
   const {message: msg} = extractReadableErrorDetails(error);
-  if (msg === 'EMAIL_NOT_VERIFIED') {
-    return `На ${ADMIN_LOGIN_EMAIL} отправлена одноразовая ссылка подтверждения. Перейдите по ней и снова нажмите «Войти».`;
-  }
-  if (msg === 'NOT_ADMIN_ACCOUNT') {
-    return `Доступ к базе разрешён только владельцу (${ADMIN_LOGIN_EMAIL}) с подтверждённым email.`;
-  }
-  if (msg.includes('auth/operation-not-allowed')) {
-    return 'В Firebase не включён вход по паролю (Email/Password). Откройте Firebase Console → Authentication → Sign-in method → Email/Password и включите его.';
-  }
-  if (
-    msg.includes('auth/invalid-credential') ||
-    msg.includes('auth/wrong-password') ||
-    msg.includes('auth/user-not-found')
-  ) {
-    return 'Неверный пароль администратора.';
-  }
-  if (msg.includes('auth/too-many-requests')) {
-    return 'Слишком много попыток входа. Подождите пару минут и попробуйте снова.';
-  }
   return msg || 'Не удалось выполнить вход';
 }
 
-function formatDatabasePanelError(
-  error: unknown,
-  fallback: string,
-  userEmail?: string | null,
-): string {
+function formatDatabasePanelError(error: unknown, fallback: string): string {
   const {message, path, operation} = extractReadableErrorDetails(error);
   const exactMessage = message || fallback;
   const metaParts: string[] = [];
   if (operation) metaParts.push(`операция: ${operation}`);
   if (path) metaParts.push(`путь: ${path}`);
-  metaParts.push(`проект: ${FIREBASE_TARGET_INFO.projectId}`);
-  metaParts.push(`база: ${FIREBASE_TARGET_INFO.databaseId}`);
-  if (userEmail) metaParts.push(`аккаунт: ${userEmail}`);
+  metaParts.push(`база: ${FIREBASE_TARGET_INFO.databaseUrl}`);
 
-  return `Ошибка Firebase: ${exactMessage} (${metaParts.join(', ')})`;
+  return `Ошибка REST API: ${exactMessage} (${metaParts.join(', ')})`;
 }
 
 function RaritySelector({
@@ -292,9 +257,10 @@ function RaritySelector({
 export function AdminModal({
   open,
   onClose,
-  authUser,
   isAdmin,
+  adminConfigured,
   onPasswordSignIn,
+  onClaimPassword,
   onLogout,
   dbProductIds,
   dbReadError = '',
@@ -314,16 +280,9 @@ export function AdminModal({
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [panelError, setPanelError] = useState('');
   const [saving, setSaving] = useState(false);
-  const [diagnostics, setDiagnostics] = useState<RtdbDiagnosticEntry[]>([]);
-  const [checkingRest, setCheckingRest] = useState(false);
 
   const productsRef = React.useRef(products);
   productsRef.current = products;
-
-  useEffect(() => {
-    if (!open) return;
-    return subscribeRtdbDiagnostics(setDiagnostics);
-  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -367,7 +326,11 @@ export function AdminModal({
     setPanelError('');
     setLoginLoading(true);
     try {
-      await onPasswordSignIn(trimmed);
+      if (adminConfigured) {
+        await onPasswordSignIn(trimmed);
+      } else {
+        await onClaimPassword(trimmed);
+      }
       setPassword('');
     } catch (error) {
       setAuthError(formatPasswordAuthError(error));
@@ -416,8 +379,7 @@ export function AdminModal({
     if (saving) return;
     setPanelError('');
 
-    const activeUser = authUser ?? auth.currentUser;
-    if (!isAdmin || !activeUser) {
+    if (!isAdmin) {
       setPanelError('Сессия администратора неактивна. Войдите в админ-панель заново.');
       return;
     }
@@ -445,7 +407,6 @@ export function AdminModal({
     try {
       await withTimeout(
         (async () => {
-          await getAdminIdToken(activeUser);
           if (dbProductIds.size === 0 && products.length > 0) {
             try {
               await onSeedDatabase();
@@ -453,20 +414,14 @@ export function AdminModal({
               // Do not block adding a new item if initial seed collides with existing records
             }
           }
-          await createProductInRtdb(activeUser, products, payload);
+          await createProductInRtdb(products, payload);
         })(),
         DB_OPERATION_TIMEOUT_MS * 2,
       );
       setAddForm(EMPTY_FORM);
       setShowAddForm(false);
     } catch (error) {
-      setPanelError(
-        formatDatabasePanelError(
-          error,
-          'Ошибка при сохранении товара в базу',
-          activeUser.email,
-        ),
-      );
+      setPanelError(formatDatabasePanelError(error, 'Ошибка при сохранении товара в базу'));
     } finally {
       setSaving(false);
     }
@@ -476,8 +431,7 @@ export function AdminModal({
     if (saving) return;
     setPanelError('');
 
-    const activeUser = authUser ?? auth.currentUser;
-    if (!isAdmin || !activeUser) {
+    if (!isAdmin) {
       setPanelError('Сессия администратора неактивна. Войдите в админ-панель заново.');
       return;
     }
@@ -506,7 +460,6 @@ export function AdminModal({
     try {
       await withTimeout(
         (async () => {
-          await getAdminIdToken(activeUser);
           if (dbProductIds.size === 0 && products.length > 0) {
             try {
               await onSeedDatabase(id);
@@ -514,19 +467,13 @@ export function AdminModal({
               // Continue updating the target product even if other placeholders were skipped
             }
           }
-          await updateProductInRtdb(activeUser, id, payload, targetItem?.dbKey);
+          await updateProductInRtdb(id, payload, targetItem?.dbKey);
         })(),
         DB_OPERATION_TIMEOUT_MS * 2,
       );
       setEditingId(null);
     } catch (error) {
-      setPanelError(
-        formatDatabasePanelError(
-          error,
-          'Ошибка при обновлении товара в базе',
-          activeUser.email,
-        ),
-      );
+      setPanelError(formatDatabasePanelError(error, 'Ошибка при обновлении товара в базе'));
     } finally {
       setSaving(false);
     }
@@ -536,8 +483,7 @@ export function AdminModal({
     if (saving) return;
     setPanelError('');
 
-    const activeUser = authUser ?? auth.currentUser;
-    if (!isAdmin || !activeUser) {
+    if (!isAdmin) {
       setPanelError('Сессия администратора неактивна. Войдите в админ-панель заново.');
       return;
     }
@@ -548,13 +494,12 @@ export function AdminModal({
     try {
       await withTimeout(
         (async () => {
-          await getAdminIdToken(activeUser);
           let deletedViaSeed = false;
           if (dbProductIds.size === 0 && products.length > 0) {
             deletedViaSeed = await onSeedDatabase(id);
           }
           if (!deletedViaSeed) {
-            await deleteProductFromRtdb(activeUser, id, targetItem?.dbKey);
+            await deleteProductFromRtdb(id, targetItem?.dbKey);
           }
         })(),
         DB_OPERATION_TIMEOUT_MS * 2,
@@ -562,30 +507,9 @@ export function AdminModal({
       setConfirmDeleteId(null);
       if (editingId === id) setEditingId(null);
     } catch (error) {
-      setPanelError(
-        formatDatabasePanelError(
-          error,
-          'Ошибка при удалении товара из базы',
-          activeUser.email,
-        ),
-      );
+      setPanelError(formatDatabasePanelError(error, 'Ошибка при удалении товара из базы'));
     } finally {
       setSaving(false);
-    }
-  };
-
-  const handleTestRestRead = async () => {
-    if (checkingRest) return;
-    setCheckingRest(true);
-    setPanelError('');
-    try {
-      await refreshCatalogFromRtdb();
-    } catch (error) {
-      setPanelError(
-        formatDatabasePanelError(error, 'Не удалось выполнить GET-запрос к базе', authUser?.email),
-      );
-    } finally {
-      setCheckingRest(false);
     }
   };
 
@@ -627,7 +551,11 @@ export function AdminModal({
                   )}
                 </span>
                 <h2 className="text-[17px] sm:text-[20px] font-extrabold text-[#141414] truncate">
-                  {isAdmin ? 'Админ-панель' : 'Вход администратора'}
+                  {isAdmin
+                    ? 'Админ-панель'
+                    : adminConfigured
+                      ? 'Вход администратора'
+                      : 'Настройка пароля'}
                 </h2>
               </div>
 
@@ -659,7 +587,9 @@ export function AdminModal({
               <div className="p-5 sm:p-6 space-y-4 overflow-y-auto">
                 <form onSubmit={handlePasswordSubmit} className="space-y-4">
                   <p className="text-[14px] font-semibold text-neutral-600 leading-snug">
-                    Введите пароль администратора, чтобы управлять товарами.
+                    {adminConfigured
+                      ? 'Введите пароль администратора, чтобы управлять товарами.'
+                      : 'Первый запуск: задайте пароль администратора (от 6 символов), чтобы защитить доступ к панели.'}
                   </p>
 
                   <div>
@@ -667,18 +597,21 @@ export function AdminModal({
                       htmlFor="admin-password-input"
                       className="block text-[12px] font-bold text-[#141414] mb-1.5"
                     >
-                      Пароль
+                      {adminConfigured ? 'Пароль' : 'Новый пароль администратора'}
                     </label>
                     <div className="relative">
                       <input
                         id="admin-password-input"
                         type={showPassword ? 'text' : 'password'}
-                        autoComplete="current-password"
+                        autoComplete={adminConfigured ? 'current-password' : 'new-password'}
                         autoFocus
                         required
+                        minLength={adminConfigured ? 1 : 6}
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
-                        placeholder="Введите пароль"
+                        placeholder={
+                          adminConfigured ? 'Введите пароль' : 'Придумайте пароль (мин. 6 символов)'
+                        }
                         className="w-full px-4 py-3 pr-11 rounded-2xl border-[1.5px] border-[#1A1A1A] bg-white text-[15px] font-semibold text-[#141414] focus:outline-none focus:ring-2 focus:ring-black/15"
                       />
                       <button
@@ -702,7 +635,13 @@ export function AdminModal({
                     className="w-full min-h-[48px] py-3 px-5 rounded-full bg-[#141414] text-white text-[15px] font-bold hover:bg-black active:scale-[0.98] transition-all inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                   >
                     <KeyRound className="w-4 h-4 shrink-0" />
-                    <span>{loginLoading ? 'Вход...' : 'Войти'}</span>
+                    <span>
+                      {loginLoading
+                        ? 'Проверка...'
+                        : adminConfigured
+                          ? 'Войти'
+                          : 'Сохранить пароль и войти'}
+                    </span>
                   </button>
                 </form>
 
@@ -717,32 +656,12 @@ export function AdminModal({
               </div>
             ) : (
               <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
-                {/* Database Sync Banner */}
-                <div className="flex flex-wrap items-center justify-between gap-2.5 px-3.5 py-2.5 rounded-2xl border border-black/15 bg-[#FAFAFA] text-[12px] font-bold text-[#141414]">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Database className="w-4 h-4 shrink-0" />
-                    <span className="truncate">
-                      REST API: {FIREBASE_TARGET_INFO.databaseUrl}/products.json
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={checkingRest}
-                    onClick={handleTestRestRead}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-black/25 bg-white text-[11px] font-bold text-[#141414] hover:bg-neutral-100 disabled:opacity-50 cursor-pointer shrink-0"
-                  >
-                    <RefreshCw className={`w-3 h-3 ${checkingRest ? 'animate-spin' : ''}`} />
-                    <span>{checkingRest ? 'Проверка...' : 'Проверить GET'}</span>
-                  </button>
-                </div>
-
                 {dbReadError && (
                   <div
                     role="alert"
                     className="p-3 rounded-2xl bg-amber-50 border border-amber-300 text-[12px] font-bold text-amber-900 leading-snug"
                   >
-                    Realtime Database отклонила чтение каталога: {dbReadError}. Проверьте правила
-                    Realtime Database → Rules в проекте {FIREBASE_TARGET_INFO.projectId}.
+                    Не удалось загрузить каталог: {dbReadError}.
                   </div>
                 )}
 
@@ -754,72 +673,6 @@ export function AdminModal({
                     {panelError}
                   </div>
                 )}
-
-                {/* REST Request Diagnostics Block */}
-                <div className="rounded-2xl border border-black/15 bg-[#FAFAFA] p-3 space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5 text-[12px] font-extrabold text-[#141414]">
-                      <Activity className="w-3.5 h-3.5 shrink-0" />
-                      <span>Диагностика REST-запросов ({diagnostics.length})</span>
-                    </div>
-                    {diagnostics.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={clearRtdbDiagnostics}
-                        className="text-[11px] font-bold text-neutral-500 hover:text-[#141414] underline cursor-pointer"
-                      >
-                        Очистить
-                      </button>
-                    )}
-                  </div>
-
-                  {diagnostics.length === 0 ? (
-                    <p className="text-[11px] font-medium text-neutral-500">
-                      Нажмите «Сохранить», «Удалить» или «Проверить GET» — здесь появится HTTP-статус и ответ сервера.
-                    </p>
-                  ) : (
-                    <div className="space-y-1.5 max-h-[160px] overflow-y-auto pr-1">
-                      {diagnostics.map((entry) => (
-                        <div
-                          key={entry.id}
-                          className={`p-2 rounded-xl border text-[11px] leading-snug ${
-                            entry.status === 'pending'
-                              ? 'bg-blue-50/70 border-blue-200 text-blue-900'
-                              : entry.status === 'success'
-                                ? 'bg-emerald-50/70 border-emerald-200 text-emerald-950'
-                                : 'bg-red-50 border-red-200 text-red-900'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-2 font-extrabold flex-wrap">
-                            <span>
-                              [{entry.timestamp}] {entry.method} • {entry.action}
-                            </span>
-                            <span>
-                              {entry.status === 'pending'
-                                ? 'Отправка...'
-                                : entry.httpStatus
-                                  ? `HTTP ${entry.httpStatus}${entry.durationMs !== undefined ? ` (${entry.durationMs} мс)` : ''}`
-                                  : `Ошибка${entry.durationMs !== undefined ? ` (${entry.durationMs} мс)` : ''}`}
-                            </span>
-                          </div>
-                          <div className="text-[10px] font-mono opacity-80 break-all mt-0.5">
-                            {entry.url} ({entry.authMode === 'auth-token' ? 'с auth-токеном' : 'публичный'})
-                          </div>
-                          {entry.errorMessage && (
-                            <div className="font-bold text-red-700 mt-1 break-words">
-                              Ошибка: {entry.errorMessage}
-                            </div>
-                          )}
-                          {entry.responseBody && (
-                            <div className="font-mono text-[10px] bg-white/75 rounded-lg px-2 py-1 mt-1 border border-black/10 break-all">
-                              Ответ: {entry.responseBody}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
 
                 {/* Add Product Toggle & Form */}
                 <div className="rounded-[24px] border-[1.5px] border-[#1A1A1A] p-3.5 sm:p-4 bg-neutral-50/70">

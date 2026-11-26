@@ -4,13 +4,6 @@
  */
 
 import React, {useCallback, useEffect, useMemo, useState} from 'react';
-import {
-  type User,
-  onAuthStateChanged,
-  sendEmailVerification,
-  signInWithEmailAndPassword,
-  signOut,
-} from 'firebase/auth';
 import {AdminModal} from './components/AdminModal';
 import {BackgroundScene} from './components/BackgroundScene';
 import {BottomDock} from './components/BottomDock';
@@ -20,9 +13,7 @@ import {ProductGrid} from './components/ProductGrid';
 import {ReviewsBlock} from './components/ReviewsBlock';
 import {CartDrawer, CartEntry, FavoritesDrawer} from './components/ShopDrawers';
 import {DEFAULT_PRODUCTS, ProductItem} from './data/products';
-import {ADMIN_LOGIN_EMAIL, auth} from './firebase';
 import {
-  checkIsRealtimeAdmin,
   seedProductsIfEmpty,
   subscribePublicProducts,
 } from './services/realtimeDbService';
@@ -81,39 +72,35 @@ export default function App() {
   const [adminModalOpen, setAdminModalOpen] = useState(false);
   const [quickEditId, setQuickEditId] = useState<number | null>(null);
 
-  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [adminToken, setAdminToken] = useState<string | null>(null);
+  const [adminConfigured, setAdminConfigured] = useState<boolean>(true);
   const [authReady, setAuthReady] = useState(false);
-  const [isRealtimeAdmin, setIsRealtimeAdmin] = useState(false);
 
-  // Track Firebase Authentication state
+  const isAdmin = Boolean(adminToken);
+
+  // Check server admin passcode configuration status on mount
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (user) => {
-      setAuthUser(user);
-      if (user) {
-        try {
-          if (!user.emailVerified) {
-            await user.reload().catch(() => undefined);
-          }
-          if (user.emailVerified) {
-            await user.getIdToken(true).catch(() => undefined);
-            const adminStatus = await checkIsRealtimeAdmin(user);
-            setIsRealtimeAdmin(adminStatus);
-          } else {
-            setIsRealtimeAdmin(false);
-          }
-        } catch (err) {
-          console.error('Auth initialization error:', err);
-          setIsRealtimeAdmin(false);
+    let active = true;
+    fetch('/api/admin/status', {cache: 'no-store'})
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: {configured?: boolean; authenticated?: boolean} | null) => {
+        if (!active) return;
+        if (data && typeof data.configured === 'boolean') {
+          setAdminConfigured(data.configured);
         }
-      } else {
-        setIsRealtimeAdmin(false);
-      }
-      setAuthReady(true);
-    });
-    return () => unsub();
+      })
+      .catch(() => {
+        // Keep default configured state if server status check fails transiently
+      })
+      .finally(() => {
+        if (active) setAuthReady(true);
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
-  // Subscribe to public Realtime Database product catalog in real time
+  // Subscribe to public Realtime Database product catalog via REST API
   useEffect(() => {
     const unsub = subscribePublicProducts(
       (items) => {
@@ -135,9 +122,9 @@ export default function App() {
 
   // Auto-seed Realtime Database catalog on first admin sign-in when database is empty
   useEffect(() => {
-    if (!authReady || !isRealtimeAdmin || !authUser || !rtdbLoaded) return;
+    if (!authReady || !isAdmin || !rtdbLoaded) return;
     if (rtdbProducts.length === 0 && !rtdbSeeded) {
-      void seedProductsIfEmpty(authUser, DEFAULT_PRODUCTS)
+      void seedProductsIfEmpty(DEFAULT_PRODUCTS)
         .then((seeded) => {
           if (seeded) {
             setRtdbSeeded(true);
@@ -147,14 +134,7 @@ export default function App() {
           console.warn('Initial catalog seed failed:', err);
         });
     }
-  }, [
-    authReady,
-    isRealtimeAdmin,
-    authUser,
-    rtdbLoaded,
-    rtdbProducts.length,
-    rtdbSeeded,
-  ]);
+  }, [authReady, isAdmin, rtdbLoaded, rtdbProducts.length, rtdbSeeded]);
 
   // Public catalog is synchronized via Firebase Realtime Database; favorites and cart remain per-device locally.
 
@@ -187,46 +167,61 @@ export default function App() {
   }, [cartQuantities]);
 
   const handlePasswordSignIn = useCallback(async (password: string) => {
-    const credential = await signInWithEmailAndPassword(auth, ADMIN_LOGIN_EMAIL, password);
-    await credential.user.reload();
-
-    if (!credential.user.emailVerified) {
-      try {
-        await sendEmailVerification(credential.user);
-      } catch {
-        // Ignore rate-limit errors if verification email was recently sent
+    const response = await fetch('/api/admin/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password}),
+    });
+    const data = (await response.json().catch(() => ({}))) as {
+      token?: string;
+      error?: string;
+    };
+    if (!response.ok || !data.token) {
+      if (response.status === 409) {
+        setAdminConfigured(false);
       }
-      throw new Error('EMAIL_NOT_VERIFIED');
+      throw new Error(data.error || 'Неверный пароль администратора');
     }
-
-    // Force-refresh JWT so Realtime Database rules receive email_verified: true immediately
-    await credential.user.getIdToken(true);
-
-    const adminStatus = await checkIsRealtimeAdmin(credential.user);
-    setAuthUser(credential.user);
-    setIsRealtimeAdmin(adminStatus);
-    if (!adminStatus) {
-      throw new Error('NOT_ADMIN_ACCOUNT');
-    }
+    setAdminConfigured(true);
+    setAdminToken(data.token);
   }, []);
 
-  const handleAdminSignOut = useCallback(async () => {
-    await signOut(auth);
-    setIsRealtimeAdmin(false);
+  const handleClaimPassword = useCallback(async (password: string) => {
+    const response = await fetch('/api/admin/claim', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password}),
+    });
+    const data = (await response.json().catch(() => ({}))) as {
+      token?: string;
+      error?: string;
+    };
+    if (!response.ok || !data.token) {
+      if (response.status === 409) {
+        setAdminConfigured(true);
+      }
+      throw new Error(data.error || 'Не удалось сохранить пароль администратора');
+    }
+    setAdminConfigured(true);
+    setAdminToken(data.token);
+  }, []);
+
+  const handleAdminSignOut = useCallback(() => {
+    setAdminToken(null);
   }, []);
 
   const handleSeedDatabase = useCallback(
     async (excludeId?: number): Promise<boolean> => {
-      if (!authUser || !isRealtimeAdmin) return false;
+      if (!isAdmin) return false;
       const itemsToSeed =
         typeof excludeId === 'number'
           ? DEFAULT_PRODUCTS.filter((item) => item.id !== excludeId)
           : DEFAULT_PRODUCTS;
-      const seeded = await seedProductsIfEmpty(authUser, itemsToSeed);
+      const seeded = await seedProductsIfEmpty(itemsToSeed);
       setRtdbSeeded(true);
       return seeded;
     },
-    [authUser, isRealtimeAdmin],
+    [isAdmin],
   );
 
   const handleToggleFavorite = (id: number) => {
@@ -295,7 +290,7 @@ export default function App() {
         <HeaderBar
           activeTab={activeTab}
           onTabChange={setActiveTab}
-          isAdmin={isRealtimeAdmin}
+          isAdmin={isAdmin}
           onOpenAdmin={() => {
             setQuickEditId(null);
             setAdminModalOpen(true);
@@ -309,7 +304,7 @@ export default function App() {
               favoriteIds={favoriteIds}
               onToggleFavorite={handleToggleFavorite}
               onAddToCart={handleAddToCart}
-              isAdmin={isRealtimeAdmin}
+              isAdmin={isAdmin}
               onQuickEdit={(id) => {
                 setQuickEditId(id);
                 setAdminModalOpen(true);
@@ -350,12 +345,11 @@ export default function App() {
           setAdminModalOpen(false);
           setQuickEditId(null);
         }}
-        authUser={authUser}
-        isAdmin={isRealtimeAdmin}
+        isAdmin={isAdmin}
+        adminConfigured={adminConfigured}
         onPasswordSignIn={handlePasswordSignIn}
-        onLogout={() => {
-          void handleAdminSignOut();
-        }}
+        onClaimPassword={handleClaimPassword}
+        onLogout={handleAdminSignOut}
         dbProductIds={rtdbProductIds}
         dbReadError={rtdbReadError}
         onSeedDatabase={handleSeedDatabase}

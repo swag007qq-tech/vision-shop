@@ -1,7 +1,5 @@
-import type {User} from 'firebase/auth';
 import {ProductItem, RarityCode, normalizeRarityString} from '../data/products';
 import {
-  BOOTSTRAPPED_ADMIN_EMAIL,
   DB_OPERATION_TIMEOUT_MS,
   HARDCODED_DATABASE_URL,
   OperationType,
@@ -18,7 +16,6 @@ export interface RtdbDiagnosticEntry {
   action: string;
   method: RtdbHttpMethod;
   url: string;
-  authMode: 'public' | 'auth-token';
   status: 'pending' | 'success' | 'error';
   httpStatus?: number;
   durationMs?: number;
@@ -64,14 +61,12 @@ export function clearRtdbDiagnostics(): void {
 }
 
 function formatNowTime(): string {
-  const d = new Date();
-  return d.toLocaleTimeString('ru-RU', {hour12: false});
+  return new Date().toLocaleTimeString('ru-RU', {hour12: false});
 }
 
 function sanitizeResponsePreview(rawText: string): string {
   const trimmed = rawText.trim();
   if (!trimmed) return '(пустой ответ)';
-  // Shorten huge inline base64 strings in diagnostics so UI stays fast and readable
   const compacted = trimmed.replace(
     /data:image\/[a-zA-Z0-9+.-]+;base64,[A-Za-z0-9+/=]{80,}/g,
     '[base64-image]',
@@ -87,7 +82,6 @@ interface RestFetchOptions {
   method: RtdbHttpMethod;
   path: string;
   body?: unknown;
-  authToken?: string;
   operationType: OperationType;
   timeoutMs?: number;
 }
@@ -97,15 +91,11 @@ async function rtdbRestFetch<T = unknown>({
   method,
   path,
   body,
-  authToken,
   operationType,
   timeoutMs = DB_OPERATION_TIMEOUT_MS,
 }: RestFetchOptions): Promise<{data: T; httpStatus: number; rawText: string}> {
   const normalizedPath = path.replace(/^\/+/, '');
   const cleanUrl = `${HARDCODED_DATABASE_URL}/${normalizedPath}.json`;
-  const requestUrl = authToken
-    ? `${cleanUrl}?auth=${encodeURIComponent(authToken)}`
-    : cleanUrl;
 
   const entryId = nextDiagnosticId++;
   const startedAt = Date.now();
@@ -116,7 +106,6 @@ async function rtdbRestFetch<T = unknown>({
     action,
     method,
     url: cleanUrl,
-    authMode: authToken ? 'auth-token' : 'public',
     status: 'pending',
   });
 
@@ -124,7 +113,7 @@ async function rtdbRestFetch<T = unknown>({
   const abortTimer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const fetchPromise = fetch(requestUrl, {
+    const fetchPromise = fetch(cleanUrl, {
       method,
       cache: 'no-store',
       headers: body !== undefined ? {'Content-Type': 'application/json'} : undefined,
@@ -170,7 +159,6 @@ async function rtdbRestFetch<T = unknown>({
         action,
         method,
         url: cleanUrl,
-        authMode: authToken ? 'auth-token' : 'public',
         status: 'error',
         httpStatus: response.status,
         durationMs,
@@ -187,7 +175,6 @@ async function rtdbRestFetch<T = unknown>({
       action,
       method,
       url: cleanUrl,
-      authMode: authToken ? 'auth-token' : 'public',
       status: 'success',
       httpStatus: response.status,
       durationMs,
@@ -210,7 +197,6 @@ async function rtdbRestFetch<T = unknown>({
         ? error.message
         : String(error);
 
-    // Avoid overwriting detailed error diagnostic already recorded for !response.ok
     const current = diagnosticHistory.find((item) => item.id === entryId);
     if (!current || current.status === 'pending') {
       addOrUpdateDiagnostic({
@@ -219,7 +205,6 @@ async function rtdbRestFetch<T = unknown>({
         action,
         method,
         url: cleanUrl,
-        authMode: authToken ? 'auth-token' : 'public',
         status: 'error',
         durationMs,
         errorMessage: rawMsg,
@@ -233,23 +218,6 @@ async function rtdbRestFetch<T = unknown>({
   } finally {
     globalThis.clearTimeout(abortTimer);
   }
-}
-
-export async function getAdminIdToken(user: User): Promise<string> {
-  try {
-    const tokenResult = await withTimeout(user.getIdTokenResult(false), 2000);
-    if (tokenResult.claims?.email_verified === true && tokenResult.token) {
-      return tokenResult.token;
-    }
-  } catch {
-    // Fall through to forced refresh
-  }
-
-  return await withTimeout(
-    user.getIdToken(true),
-    3000,
-    'Не удалось получить токен авторизации Firebase Auth за 3 сек.',
-  );
 }
 
 function sanitizeRarity(rarity: string | undefined): RarityCode {
@@ -275,7 +243,9 @@ function sanitizeImageUrl(raw: string): string {
   throw new Error('Недопустимая ссылка или формат изображения');
 }
 
-function sanitizeProductFields(input: Omit<ProductItem, 'id' | 'dbKey'>): Omit<ProductItem, 'id' | 'dbKey'> {
+function sanitizeProductFields(
+  input: Omit<ProductItem, 'id' | 'dbKey'>,
+): Omit<ProductItem, 'id' | 'dbKey'> {
   const name = input.name.trim().slice(0, SCHEMA_LIMITS.PRODUCT_NAME_MAX_LENGTH);
   const price = Math.min(
     SCHEMA_LIMITS.MAX_PRICE,
@@ -326,27 +296,6 @@ function parseProductsPayload(raw: unknown): ProductItem[] {
 
   items.sort((a, b) => a.id - b.id);
   return items;
-}
-
-export async function checkIsRealtimeAdmin(user: User | null): Promise<boolean> {
-  if (!user || !user.emailVerified) return false;
-  if ((user.email ?? '').trim().toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase()) {
-    return true;
-  }
-
-  try {
-    const token = await getAdminIdToken(user);
-    const {data} = await rtdbRestFetch<unknown>({
-      action: 'Проверка прав администратора',
-      method: 'GET',
-      path: `admins/${user.uid}`,
-      authToken: token,
-      operationType: OperationType.GET,
-    });
-    return data !== null && data !== undefined;
-  } catch {
-    return false;
-  }
 }
 
 export async function fetchPublicProducts(): Promise<ProductItem[]> {
@@ -404,10 +353,7 @@ export function subscribePublicProducts(
 
 let activeSeedPromise: Promise<boolean> | null = null;
 
-export async function seedProductsIfEmpty(
-  user: User,
-  seedItems: ProductItem[],
-): Promise<boolean> {
+export async function seedProductsIfEmpty(seedItems: ProductItem[]): Promise<boolean> {
   if (activeSeedPromise) {
     return activeSeedPromise;
   }
@@ -440,7 +386,7 @@ export async function seedProductsIfEmpty(
         imageUrl: clean.imageUrl,
         rarity: clean.rarity,
         visibility: 'public',
-        createdBy: user.uid,
+        createdBy: 'admin',
         createdAt: {'.sv': 'timestamp'},
         updatedAt: {'.sv': 'timestamp'},
       };
@@ -450,13 +396,11 @@ export async function seedProductsIfEmpty(
       return false;
     }
 
-    const token = await getAdminIdToken(user);
     await rtdbRestFetch({
       action: 'Начальное заполнение каталога',
       method: 'PATCH',
       path,
       body: updates,
-      authToken: token,
       operationType: OperationType.WRITE,
     });
 
@@ -472,7 +416,6 @@ export async function seedProductsIfEmpty(
 }
 
 export async function createProductInRtdb(
-  user: User,
   currentProducts: ProductItem[],
   payload: Omit<ProductItem, 'id' | 'dbKey'>,
 ): Promise<ProductItem> {
@@ -495,7 +438,6 @@ export async function createProductInRtdb(
     // Fall back to local maxId + 1 if pre-read fails
   }
 
-  const token = await getAdminIdToken(user);
   const newKey = String(nextId);
 
   await rtdbRestFetch({
@@ -511,12 +453,11 @@ export async function createProductInRtdb(
         imageUrl: clean.imageUrl,
         rarity: clean.rarity,
         visibility: 'public',
-        createdBy: user.uid,
+        createdBy: 'admin',
         createdAt: {'.sv': 'timestamp'},
         updatedAt: {'.sv': 'timestamp'},
       },
     },
-    authToken: token,
     operationType: OperationType.CREATE,
   });
 
@@ -525,7 +466,6 @@ export async function createProductInRtdb(
 }
 
 export async function updateProductInRtdb(
-  user: User,
   id: number,
   payload: Omit<ProductItem, 'id' | 'dbKey'>,
   dbKey?: string,
@@ -551,7 +491,6 @@ export async function updateProductInRtdb(
     // Proceed directly with PATCH so edit attempt still surfaces exact write response
   }
 
-  const token = await getAdminIdToken(user);
   await rtdbRestFetch({
     action: `Сохранение товара #${productId}`,
     method: 'PATCH',
@@ -567,11 +506,10 @@ export async function updateProductInRtdb(
       createdBy:
         existingVal && typeof existingVal.createdBy === 'string'
           ? existingVal.createdBy
-          : user.uid,
+          : 'admin',
       createdAt: existingVal?.createdAt ?? {'.sv': 'timestamp'},
       updatedAt: {'.sv': 'timestamp'},
     },
-    authToken: token,
     operationType: OperationType.UPDATE,
   });
 
@@ -579,21 +517,15 @@ export async function updateProductInRtdb(
   return {id: productId, dbKey: targetKey, ...clean};
 }
 
-export async function deleteProductFromRtdb(
-  user: User,
-  id: number,
-  dbKey?: string,
-): Promise<void> {
+export async function deleteProductFromRtdb(id: number, dbKey?: string): Promise<void> {
   const productId = Math.floor(id);
   const targetKey = dbKey && dbKey.trim() ? dbKey.trim() : String(productId);
   const path = `products/${targetKey}`;
-  const token = await getAdminIdToken(user);
 
   await rtdbRestFetch({
     action: `Удаление товара #${productId}`,
     method: 'DELETE',
     path,
-    authToken: token,
     operationType: OperationType.DELETE,
   });
 
