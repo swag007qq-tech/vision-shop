@@ -23,13 +23,8 @@ import {DEFAULT_PRODUCTS, ProductItem} from './data/products';
 import {ADMIN_LOGIN_EMAIL, auth} from './firebase';
 import {
   checkIsFirestoreAdmin,
-  ensureUserAccount,
   seedProductsIfEmpty,
-  setCartQtyInFirestore,
-  setFavoriteInFirestore,
   subscribePublicProducts,
-  subscribeUserCart,
-  subscribeUserFavorites,
 } from './services/firestoreService';
 
 const FAVORITES_STORAGE_KEY = 'vision_shop_favorites_v1';
@@ -95,7 +90,6 @@ export default function App() {
       setAuthUser(user);
       if (user && user.emailVerified) {
         try {
-          await ensureUserAccount(user);
           const adminStatus = await checkIsFirestoreAdmin(user);
           setIsFirestoreAdmin(adminStatus);
         } catch (err) {
@@ -132,11 +126,15 @@ export default function App() {
   useEffect(() => {
     if (!authReady || !isFirestoreAdmin || !authUser || !firestoreLoaded) return;
     if (firestoreProducts.length === 0 && !firestoreSeeded) {
-      void seedProductsIfEmpty(authUser, DEFAULT_PRODUCTS).then((seeded) => {
-        if (seeded) {
-          setFirestoreSeeded(true);
-        }
-      });
+      void seedProductsIfEmpty(authUser, DEFAULT_PRODUCTS)
+        .then((seeded) => {
+          if (seeded) {
+            setFirestoreSeeded(true);
+          }
+        })
+        .catch((err) => {
+          console.warn('Initial catalog seed failed:', err);
+        });
     }
   }, [
     authReady,
@@ -147,40 +145,7 @@ export default function App() {
     firestoreSeeded,
   ]);
 
-  // Attach user-specific favorites and cart listeners ONLY when auth is ready and user is authenticated
-  useEffect(() => {
-    if (!authReady || !authUser || !authUser.emailVerified) return;
-
-    let initialFavSync = true;
-    let initialCartSync = true;
-
-    const unsubFav = subscribeUserFavorites(authUser.uid, (cloudIds) => {
-      if (initialFavSync) {
-        initialFavSync = false;
-        if (cloudIds.length === 0) {
-          setFavoriteIds((prev) => prev);
-          return;
-        }
-      }
-      setFavoriteIds(cloudIds);
-    });
-
-    const unsubCart = subscribeUserCart(authUser.uid, (cloudCart) => {
-      if (initialCartSync) {
-        initialCartSync = false;
-        if (Object.keys(cloudCart).length === 0) {
-          setCartQuantities((prev) => prev);
-          return;
-        }
-      }
-      setCartQuantities(cloudCart);
-    });
-
-    return () => {
-      unsubFav();
-      unsubCart();
-    };
-  }, [authReady, authUser]);
+  // Public catalog is synchronized via Firestore; favorites and cart remain per-device locally.
 
   const products = useMemo(() => {
     if (firestoreProducts.length > 0 || firestoreSeeded) {
@@ -223,7 +188,6 @@ export default function App() {
       throw new Error('EMAIL_NOT_VERIFIED');
     }
 
-    await ensureUserAccount(credential.user);
     const adminStatus = await checkIsFirestoreAdmin(credential.user);
     setAuthUser(credential.user);
     setIsFirestoreAdmin(adminStatus);
@@ -248,12 +212,6 @@ export default function App() {
     setFavoriteIds((prev) =>
       willBeFavorite ? [...prev, id] : prev.filter((itemId) => itemId !== id),
     );
-
-    if (authUser && authUser.emailVerified && firestoreProductIds.has(id)) {
-      void setFavoriteInFirestore(authUser.uid, id, willBeFavorite).catch((err) => {
-        console.error('Failed to sync favorite to Firestore:', err);
-      });
-    }
   };
 
   const handleAddToCart = (product: ProductItem) => {
@@ -262,12 +220,6 @@ export default function App() {
       ...prev,
       [product.id]: nextQty,
     }));
-
-    if (authUser && authUser.emailVerified && firestoreProductIds.has(product.id)) {
-      void setCartQtyInFirestore(authUser.uid, product.id, nextQty).catch((err) => {
-        console.error('Failed to sync cart item to Firestore:', err);
-      });
-    }
   };
 
   const handleUpdateCartQty = (id: number, delta: number) => {
@@ -280,12 +232,6 @@ export default function App() {
       }
       return {...prev, [id]: nextQty};
     });
-
-    if (authUser && authUser.emailVerified && firestoreProductIds.has(id)) {
-      void setCartQtyInFirestore(authUser.uid, id, nextQty).catch((err) => {
-        console.error('Failed to update cart item in Firestore:', err);
-      });
-    }
   };
 
   const handleRemoveCartItem = (id: number) => {
@@ -294,12 +240,6 @@ export default function App() {
       delete copy[id];
       return copy;
     });
-
-    if (authUser && authUser.emailVerified && firestoreProductIds.has(id)) {
-      void setCartQtyInFirestore(authUser.uid, id, 0).catch((err) => {
-        console.error('Failed to remove cart item in Firestore:', err);
-      });
-    }
   };
 
   const favoriteItems = useMemo(

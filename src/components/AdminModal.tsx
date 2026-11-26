@@ -54,10 +54,32 @@ const EMPTY_FORM: ProductFormState = {
   rarity: '',
 };
 
+function extractReadableErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (raw.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(raw) as {error?: unknown};
+      if (typeof parsed.error === 'string' && parsed.error.trim()) {
+        return parsed.error.trim();
+      }
+    } catch {
+      // ignore non-JSON messages
+    }
+  }
+  return raw;
+}
+
 function formatPasswordAuthError(error: unknown): string {
-  const msg = error instanceof Error ? error.message : String(error);
+  const msg = extractReadableErrorMessage(error);
+  const lower = msg.toLowerCase();
   if (msg === 'EMAIL_NOT_VERIFIED') {
     return `На ${ADMIN_LOGIN_EMAIL} отправлена одноразовая ссылка подтверждения. Перейдите по ней и снова нажмите «Войти».`;
+  }
+  if (msg === 'NOT_ADMIN_ACCOUNT') {
+    return `Доступ к базе разрешён только владельцу (${ADMIN_LOGIN_EMAIL}) с подтверждённым email.`;
+  }
+  if (lower.includes('permission') || lower.includes('insufficient')) {
+    return `Нет доступа к базе Firestore. Проверьте, что правила firestore.rules развёрнуты в Firebase и вход выполнен в ${ADMIN_LOGIN_EMAIL}.`;
   }
   if (msg.includes('auth/operation-not-allowed')) {
     return 'В Firebase не включён вход по паролю (Email/Password). Откройте Firebase Console → Authentication → Sign-in method → Email/Password и включите его.';
@@ -73,6 +95,15 @@ function formatPasswordAuthError(error: unknown): string {
     return 'Слишком много попыток входа. Подождите пару минут и попробуйте снова.';
   }
   return msg || 'Не удалось выполнить вход';
+}
+
+function formatFirestorePanelError(error: unknown, fallback: string): string {
+  const msg = extractReadableErrorMessage(error);
+  const lower = msg.toLowerCase();
+  if (lower.includes('permission') || lower.includes('insufficient')) {
+    return `Нет прав на изменение товаров в Firestore. Проверьте, что правила firestore.rules развёрнуты в Firebase для ${ADMIN_LOGIN_EMAIL}.`;
+  }
+  return msg || fallback;
 }
 
 function RaritySelector({
@@ -258,9 +289,7 @@ export function AdminModal({
       setAddForm(EMPTY_FORM);
       setShowAddForm(false);
     } catch (error) {
-      setPanelError(
-        error instanceof Error ? error.message : 'Ошибка при сохранении товара в базу',
-      );
+      setPanelError(formatFirestorePanelError(error, 'Ошибка при сохранении товара в базу'));
     } finally {
       setSaving(false);
     }
@@ -297,9 +326,7 @@ export function AdminModal({
       await updateProductInFirestore(id, payload);
       setEditingId(null);
     } catch (error) {
-      setPanelError(
-        error instanceof Error ? error.message : 'Ошибка при обновлении товара в базе',
-      );
+      setPanelError(formatFirestorePanelError(error, 'Ошибка при обновлении товара в базе'));
     } finally {
       setSaving(false);
     }
@@ -317,9 +344,7 @@ export function AdminModal({
       setConfirmDeleteId(null);
       if (editingId === id) setEditingId(null);
     } catch (error) {
-      setPanelError(
-        error instanceof Error ? error.message : 'Ошибка при удалении товара из базы',
-      );
+      setPanelError(formatFirestorePanelError(error, 'Ошибка при удалении товара из базы'));
     } finally {
       setSaving(false);
     }

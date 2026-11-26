@@ -186,41 +186,55 @@ export function subscribePublicProducts(
   );
 }
 
+let activeSeedPromise: Promise<boolean> | null = null;
+
 export async function seedProductsIfEmpty(
   user: User,
   seedItems: ProductItem[],
 ): Promise<boolean> {
-  const path = 'products';
-  const q = query(collection(db, path), where('visibility', '==', 'public'));
+  if (activeSeedPromise) {
+    return activeSeedPromise;
+  }
+
+  activeSeedPromise = (async () => {
+    const path = 'products';
+    const q = query(collection(db, path), where('visibility', '==', 'public'));
+    try {
+      const existingSnap = await getDocs(q);
+      if (!existingSnap.empty || seedItems.length === 0) {
+        return false;
+      }
+
+      const batch = writeBatch(db);
+      for (const item of seedItems) {
+        const clean = sanitizeProductFields(item);
+        const id = Math.floor(item.id);
+        if (id <= 0 || !SCHEMA_LIMITS.ID_PATTERN.test(String(id))) continue;
+
+        batch.set(doc(db, 'products', String(id)), {
+          productId: id,
+          name: clean.name,
+          price: clean.price,
+          gemValue: clean.gemValue,
+          imageUrl: clean.imageUrl,
+          rarity: clean.rarity,
+          visibility: 'public',
+          createdBy: user.uid,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+      await batch.commit();
+      return true;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, path);
+    }
+  })();
+
   try {
-    const existingSnap = await getDocs(q);
-    if (!existingSnap.empty || seedItems.length === 0) {
-      return false;
-    }
-
-    const batch = writeBatch(db);
-    for (const item of seedItems) {
-      const clean = sanitizeProductFields(item);
-      const id = Math.floor(item.id);
-      if (id <= 0 || !SCHEMA_LIMITS.ID_PATTERN.test(String(id))) continue;
-
-      batch.set(doc(db, 'products', String(id)), {
-        productId: id,
-        name: clean.name,
-        price: clean.price,
-        gemValue: clean.gemValue,
-        imageUrl: clean.imageUrl,
-        rarity: clean.rarity,
-        visibility: 'public',
-        createdBy: user.uid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    }
-    await batch.commit();
-    return true;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
+    return await activeSeedPromise;
+  } finally {
+    activeSeedPromise = null;
   }
 }
 
