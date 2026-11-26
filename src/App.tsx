@@ -212,32 +212,24 @@ export default function App() {
 
   const handlePasswordSignIn = useCallback(async (password: string) => {
     const credential = await signInWithEmailAndPassword(auth, ADMIN_LOGIN_EMAIL, password);
-    if (credential.user && !credential.user.emailVerified) {
+    await credential.user.reload();
+
+    if (!credential.user.emailVerified) {
       try {
         await sendEmailVerification(credential.user);
       } catch {
         // Ignore rate-limit errors if verification email was recently sent
       }
+      throw new Error('EMAIL_NOT_VERIFIED');
     }
-  }, []);
 
-  const handleRefreshVerification = useCallback(async () => {
-    if (!auth.currentUser) return false;
-    await auth.currentUser.reload();
-    const refreshed = auth.currentUser;
-    setAuthUser(refreshed);
-    if (refreshed.emailVerified) {
-      await ensureUserAccount(refreshed);
-      const adminStatus = await checkIsFirestoreAdmin(refreshed);
-      setIsFirestoreAdmin(adminStatus);
-      return adminStatus;
+    await ensureUserAccount(credential.user);
+    const adminStatus = await checkIsFirestoreAdmin(credential.user);
+    setAuthUser(credential.user);
+    setIsFirestoreAdmin(adminStatus);
+    if (!adminStatus) {
+      throw new Error('NOT_ADMIN_ACCOUNT');
     }
-    return false;
-  }, []);
-
-  const handleResendVerification = useCallback(async () => {
-    if (!auth.currentUser) return;
-    await sendEmailVerification(auth.currentUser);
   }, []);
 
   const handleAdminSignOut = useCallback(async () => {
@@ -399,8 +391,6 @@ export default function App() {
         authUser={authUser}
         isFirestoreAdmin={isFirestoreAdmin}
         onPasswordSignIn={handlePasswordSignIn}
-        onRefreshVerification={handleRefreshVerification}
-        onResendVerification={handleResendVerification}
         onLogout={() => {
           void handleAdminSignOut();
         }}

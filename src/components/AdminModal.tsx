@@ -11,7 +11,6 @@ import {
   LogOut,
   Pencil,
   Plus,
-  RefreshCw,
   ShieldCheck,
   Trash2,
   X,
@@ -32,8 +31,6 @@ interface AdminModalProps {
   authUser: User | null;
   isFirestoreAdmin: boolean;
   onPasswordSignIn: (password: string) => Promise<void>;
-  onRefreshVerification: () => Promise<boolean>;
-  onResendVerification: () => Promise<void>;
   onLogout: () => void;
   firestoreProductIds: Set<number>;
   onSeedFirestore: () => Promise<void>;
@@ -59,6 +56,9 @@ const EMPTY_FORM: ProductFormState = {
 
 function formatPasswordAuthError(error: unknown): string {
   const msg = error instanceof Error ? error.message : String(error);
+  if (msg === 'EMAIL_NOT_VERIFIED') {
+    return `На ${ADMIN_LOGIN_EMAIL} отправлена одноразовая ссылка подтверждения. Перейдите по ней и снова нажмите «Войти».`;
+  }
   if (msg.includes('auth/operation-not-allowed')) {
     return 'В Firebase не включён вход по паролю (Email/Password). Откройте Firebase Console → Authentication → Sign-in method → Email/Password и включите его.';
   }
@@ -67,7 +67,7 @@ function formatPasswordAuthError(error: unknown): string {
     msg.includes('auth/wrong-password') ||
     msg.includes('auth/user-not-found')
   ) {
-    return 'Неверный пароль администратора (или пользователь ещё не создан в Firebase Authentication).';
+    return 'Неверный пароль администратора.';
   }
   if (msg.includes('auth/too-many-requests')) {
     return 'Слишком много попыток входа. Подождите пару минут и попробуйте снова.';
@@ -131,8 +131,6 @@ export function AdminModal({
   authUser,
   isFirestoreAdmin,
   onPasswordSignIn,
-  onRefreshVerification,
-  onResendVerification,
   onLogout,
   firestoreProductIds,
   onSeedFirestore,
@@ -142,7 +140,6 @@ export function AdminModal({
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [authError, setAuthError] = useState('');
-  const [authInfo, setAuthInfo] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
 
   const [showAddForm, setShowAddForm] = useState(false);
@@ -157,7 +154,6 @@ export function AdminModal({
     if (!open) return;
     setPassword('');
     setAuthError('');
-    setAuthInfo('');
     setPanelError('');
     setConfirmDeleteId(null);
 
@@ -193,42 +189,11 @@ export function AdminModal({
       return;
     }
     setAuthError('');
-    setAuthInfo('');
     setPanelError('');
     setLoginLoading(true);
     try {
       await onPasswordSignIn(trimmed);
       setPassword('');
-    } catch (error) {
-      setAuthError(formatPasswordAuthError(error));
-    } finally {
-      setLoginLoading(false);
-    }
-  };
-
-  const handleCheckVerifiedClick = async () => {
-    setAuthError('');
-    setAuthInfo('');
-    setLoginLoading(true);
-    try {
-      const ok = await onRefreshVerification();
-      if (!ok) {
-        setAuthError('Почта ещё не подтверждена. Перейдите по ссылке из письма и нажмите ещё раз.');
-      }
-    } catch (error) {
-      setAuthError(formatPasswordAuthError(error));
-    } finally {
-      setLoginLoading(false);
-    }
-  };
-
-  const handleResendClick = async () => {
-    setAuthError('');
-    setAuthInfo('');
-    setLoginLoading(true);
-    try {
-      await onResendVerification();
-      setAuthInfo(`Письмо повторно отправлено на ${ADMIN_LOGIN_EMAIL}.`);
     } catch (error) {
       setAuthError(formatPasswordAuthError(error));
     } finally {
@@ -403,7 +368,7 @@ export function AdminModal({
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
-                {authUser && (
+                {isFirestoreAdmin && (
                   <button
                     type="button"
                     onClick={onLogout}
@@ -428,97 +393,54 @@ export function AdminModal({
             {/* Content */}
             {!isFirestoreAdmin ? (
               <div className="p-5 sm:p-6 space-y-4 overflow-y-auto">
-                {!authUser ? (
-                  <form onSubmit={handlePasswordSubmit} className="space-y-4">
-                    <p className="text-[14px] font-semibold text-neutral-600 leading-snug">
-                      Введите пароль администратора, чтобы добавлять, редактировать и удалять
-                      товары на сайте.
-                    </p>
+                <form onSubmit={handlePasswordSubmit} className="space-y-4">
+                  <p className="text-[14px] font-semibold text-neutral-600 leading-snug">
+                    Введите пароль администратора, чтобы управлять товарами.
+                  </p>
 
-                    <div>
-                      <label
-                        htmlFor="admin-password-input"
-                        className="block text-[12px] font-bold text-[#141414] mb-1.5"
+                  <div>
+                    <label
+                      htmlFor="admin-password-input"
+                      className="block text-[12px] font-bold text-[#141414] mb-1.5"
+                    >
+                      Пароль
+                    </label>
+                    <div className="relative">
+                      <input
+                        id="admin-password-input"
+                        type={showPassword ? 'text' : 'password'}
+                        autoComplete="current-password"
+                        autoFocus
+                        required
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="Введите пароль"
+                        className="w-full px-4 py-3 pr-11 rounded-2xl border-[1.5px] border-[#1A1A1A] bg-white text-[15px] font-semibold text-[#141414] focus:outline-none focus:ring-2 focus:ring-black/15"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((prev) => !prev)}
+                        aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full flex items-center justify-center text-neutral-600 hover:bg-neutral-100 cursor-pointer"
                       >
-                        Пароль
-                      </label>
-                      <div className="relative">
-                        <input
-                          id="admin-password-input"
-                          type={showPassword ? 'text' : 'password'}
-                          autoComplete="current-password"
-                          autoFocus
-                          required
-                          value={password}
-                          onChange={(e) => setPassword(e.target.value)}
-                          placeholder="Введите пароль"
-                          className="w-full px-4 py-3 pr-11 rounded-2xl border-[1.5px] border-[#1A1A1A] bg-white text-[15px] font-semibold text-[#141414] focus:outline-none focus:ring-2 focus:ring-black/15"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowPassword((prev) => !prev)}
-                          aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
-                          className="absolute right-2.5 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full flex items-center justify-center text-neutral-600 hover:bg-neutral-100 cursor-pointer"
-                        >
-                          {showPassword ? (
-                            <EyeOff className="w-4 h-4" />
-                          ) : (
-                            <Eye className="w-4 h-4" />
-                          )}
-                        </button>
-                      </div>
+                        {showPassword ? (
+                          <EyeOff className="w-4 h-4" />
+                        ) : (
+                          <Eye className="w-4 h-4" />
+                        )}
+                      </button>
                     </div>
-
-                    <button
-                      type="submit"
-                      disabled={loginLoading}
-                      className="w-full min-h-[48px] py-3 px-5 rounded-full bg-[#141414] text-white text-[15px] font-bold hover:bg-black active:scale-[0.98] transition-all inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-                    >
-                      <KeyRound className="w-4 h-4 shrink-0" />
-                      <span>{loginLoading ? 'Вход...' : 'Войти'}</span>
-                    </button>
-                  </form>
-                ) : !authUser.emailVerified ? (
-                  <div className="space-y-3">
-                    <div className="p-3.5 rounded-2xl bg-[#FAFAFA] border border-[#141414]/20 space-y-2 text-[13px] font-semibold text-[#141414]">
-                      <p>
-                        Пароль верный! Осталось одноразовое подтверждение почты{' '}
-                        <span className="font-extrabold">{authUser.email || ADMIN_LOGIN_EMAIL}</span>:
-                        перейдите по ссылке из письма, затем нажмите кнопку ниже.
-                      </p>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={handleCheckVerifiedClick}
-                      disabled={loginLoading}
-                      className="w-full min-h-[46px] py-2.5 px-5 rounded-full bg-[#141414] text-white text-[14px] font-bold hover:bg-black active:scale-[0.98] transition-all inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-                    >
-                      <RefreshCw className="w-4 h-4 shrink-0" />
-                      <span>{loginLoading ? 'Проверка...' : 'Я подтвердил(а) почту — войти'}</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={handleResendClick}
-                      disabled={loginLoading}
-                      className="w-full min-h-[42px] py-2 px-4 rounded-full border-[1.5px] border-[#1A1A1A] bg-white text-[#141414] text-[13px] font-bold hover:bg-neutral-50 transition-colors cursor-pointer disabled:opacity-50"
-                    >
-                      Отправить письмо повторно
-                    </button>
                   </div>
-                ) : (
-                  <p className="p-3.5 rounded-2xl bg-[#FAFAFA] border border-[#141414]/20 text-[13px] font-semibold text-[#141414]">
-                    У текущей учётной записи нет прав администратора. Нажмите «Выйти» и войдите по
-                    паролю администратора.
-                  </p>
-                )}
 
-                {authInfo && (
-                  <p className="p-3 rounded-2xl bg-[#FAFAFA] border border-black/20 text-[12px] font-bold text-[#141414] leading-snug">
-                    {authInfo}
-                  </p>
-                )}
+                  <button
+                    type="submit"
+                    disabled={loginLoading}
+                    className="w-full min-h-[48px] py-3 px-5 rounded-full bg-[#141414] text-white text-[15px] font-bold hover:bg-black active:scale-[0.98] transition-all inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                  >
+                    <KeyRound className="w-4 h-4 shrink-0" />
+                    <span>{loginLoading ? 'Вход...' : 'Войти'}</span>
+                  </button>
+                </form>
 
                 {authError && (
                   <p
