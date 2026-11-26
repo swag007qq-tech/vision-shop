@@ -185,7 +185,7 @@ service cloud.firestore {
     // Storefront Catalog Collection
     match /products/{productId} {
       allow get: if isValidId(productId)
-        && (existing().visibility == 'public' || isAdmin());
+        && (isAdmin() || (resource != null && existing().visibility == 'public'));
       allow list: if resource.data.visibility == 'public';
       allow create: if isSignedIn()
         && isValidId(productId)

@@ -13,8 +13,12 @@ const resolvedConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID || firebaseConfig.appId,
 };
 
+const customProjectId = (import.meta.env.VITE_FIREBASE_PROJECT_ID || '').trim();
+const isCustomProject = Boolean(customProjectId) && customProjectId !== firebaseConfig.projectId;
+const customDatabaseId = (import.meta.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID || '').trim();
+
 const resolvedDatabaseId =
-  import.meta.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID || firebaseConfig.firestoreDatabaseId;
+  customDatabaseId || (isCustomProject ? '(default)' : firebaseConfig.firestoreDatabaseId);
 
 const app = initializeApp(resolvedConfig);
 
@@ -25,6 +29,11 @@ export const db =
     : getFirestore(app);
 
 export const auth = getAuth(app);
+
+export const FIREBASE_TARGET_INFO = {
+  projectId: resolvedConfig.projectId,
+  databaseId: resolvedDatabaseId || '(default)',
+};
 
 export const BOOTSTRAPPED_ADMIN_EMAIL = 'swag007qq@gmail.com';
 export const ADMIN_LOGIN_EMAIL =

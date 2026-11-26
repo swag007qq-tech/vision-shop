@@ -88,10 +88,18 @@ export default function App() {
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       setAuthUser(user);
-      if (user && user.emailVerified) {
+      if (user) {
         try {
-          const adminStatus = await checkIsFirestoreAdmin(user);
-          setIsFirestoreAdmin(adminStatus);
+          if (!user.emailVerified) {
+            await user.reload().catch(() => undefined);
+          }
+          if (user.emailVerified) {
+            await user.getIdToken(true).catch(() => undefined);
+            const adminStatus = await checkIsFirestoreAdmin(user);
+            setIsFirestoreAdmin(adminStatus);
+          } else {
+            setIsFirestoreAdmin(false);
+          }
         } catch (err) {
           console.error('Auth initialization error:', err);
           setIsFirestoreAdmin(false);
@@ -188,6 +196,9 @@ export default function App() {
       throw new Error('EMAIL_NOT_VERIFIED');
     }
 
+    // Force-refresh JWT so Firestore rules receive email_verified: true immediately
+    await credential.user.getIdToken(true);
+
     const adminStatus = await checkIsFirestoreAdmin(credential.user);
     setAuthUser(credential.user);
     setIsFirestoreAdmin(adminStatus);
@@ -201,11 +212,18 @@ export default function App() {
     setIsFirestoreAdmin(false);
   }, []);
 
-  const handleSeedFirestore = useCallback(async () => {
-    if (!authUser || !isFirestoreAdmin) return;
-    await seedProductsIfEmpty(authUser, DEFAULT_PRODUCTS);
-    setFirestoreSeeded(true);
-  }, [authUser, isFirestoreAdmin]);
+  const handleSeedFirestore = useCallback(
+    async (excludeId?: number) => {
+      if (!authUser || !isFirestoreAdmin) return;
+      const itemsToSeed =
+        typeof excludeId === 'number'
+          ? DEFAULT_PRODUCTS.filter((item) => item.id !== excludeId)
+          : DEFAULT_PRODUCTS;
+      await seedProductsIfEmpty(authUser, itemsToSeed);
+      setFirestoreSeeded(true);
+    },
+    [authUser, isFirestoreAdmin],
+  );
 
   const handleToggleFavorite = (id: number) => {
     const willBeFavorite = !favoriteIds.includes(id);

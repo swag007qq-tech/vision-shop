@@ -16,7 +16,7 @@ import {
   X,
 } from 'lucide-react';
 import {ProductItem, RARITY_OPTIONS, RarityCode} from '../data/products';
-import {ADMIN_LOGIN_EMAIL} from '../firebase';
+import {ADMIN_LOGIN_EMAIL, FIREBASE_TARGET_INFO} from '../firebase';
 import {
   createProductInFirestore,
   deleteProductFromFirestore,
@@ -33,7 +33,7 @@ interface AdminModalProps {
   onPasswordSignIn: (password: string) => Promise<void>;
   onLogout: () => void;
   firestoreProductIds: Set<number>;
-  onSeedFirestore: () => Promise<void>;
+  onSeedFirestore: (excludeId?: number) => Promise<void>;
   products: ProductItem[];
   initialEditProductId?: number | null;
 }
@@ -97,11 +97,16 @@ function formatPasswordAuthError(error: unknown): string {
   return msg || 'Не удалось выполнить вход';
 }
 
-function formatFirestorePanelError(error: unknown, fallback: string): string {
+function formatFirestorePanelError(
+  error: unknown,
+  fallback: string,
+  userEmail?: string | null,
+): string {
   const msg = extractReadableErrorMessage(error);
   const lower = msg.toLowerCase();
   if (lower.includes('permission') || lower.includes('insufficient')) {
-    return `Нет прав на изменение товаров в Firestore. Проверьте, что правила firestore.rules развёрнуты в Firebase для ${ADMIN_LOGIN_EMAIL}.`;
+    const activeEmail = userEmail || ADMIN_LOGIN_EMAIL;
+    return `Нет прав на изменение товаров в Firestore (проект: ${FIREBASE_TARGET_INFO.projectId}, база: ${FIREBASE_TARGET_INFO.databaseId}, аккаунт: ${activeEmail}). Убедитесь, что правила опубликованы именно для этого проекта и базы.`;
   }
   return msg || fallback;
 }
@@ -282,14 +287,25 @@ export function AdminModal({
 
     setSaving(true);
     try {
+      await authUser.getIdToken(true).catch(() => undefined);
       if (firestoreProductIds.size === 0 && products.length > 0) {
-        await onSeedFirestore();
+        try {
+          await onSeedFirestore();
+        } catch {
+          // Do not block adding a new item if initial seed collides with existing records
+        }
       }
       await createProductInFirestore(authUser, products, payload);
       setAddForm(EMPTY_FORM);
       setShowAddForm(false);
     } catch (error) {
-      setPanelError(formatFirestorePanelError(error, 'Ошибка при сохранении товара в базу'));
+      setPanelError(
+        formatFirestorePanelError(
+          error,
+          'Ошибка при сохранении товара в базу',
+          authUser.email,
+        ),
+      );
     } finally {
       setSaving(false);
     }
@@ -320,13 +336,24 @@ export function AdminModal({
 
     setSaving(true);
     try {
+      await authUser.getIdToken(true).catch(() => undefined);
       if (firestoreProductIds.size === 0 && products.length > 0) {
-        await onSeedFirestore();
+        try {
+          await onSeedFirestore(id);
+        } catch {
+          // Continue updating the target product even if other placeholders were skipped
+        }
       }
-      await updateProductInFirestore(id, payload);
+      await updateProductInFirestore(authUser, id, payload);
       setEditingId(null);
     } catch (error) {
-      setPanelError(formatFirestorePanelError(error, 'Ошибка при обновлении товара в базе'));
+      setPanelError(
+        formatFirestorePanelError(
+          error,
+          'Ошибка при обновлении товара в базе',
+          authUser.email,
+        ),
+      );
     } finally {
       setSaving(false);
     }
@@ -337,14 +364,22 @@ export function AdminModal({
     setPanelError('');
     setSaving(true);
     try {
+      await authUser.getIdToken(true).catch(() => undefined);
       if (firestoreProductIds.size === 0 && products.length > 0) {
-        await onSeedFirestore();
+        await onSeedFirestore(id);
+      } else {
+        await deleteProductFromFirestore(id);
       }
-      await deleteProductFromFirestore(id);
       setConfirmDeleteId(null);
       if (editingId === id) setEditingId(null);
     } catch (error) {
-      setPanelError(formatFirestorePanelError(error, 'Ошибка при удалении товара из базы'));
+      setPanelError(
+        formatFirestorePanelError(
+          error,
+          'Ошибка при удалении товара из базы',
+          authUser.email,
+        ),
+      );
     } finally {
       setSaving(false);
     }

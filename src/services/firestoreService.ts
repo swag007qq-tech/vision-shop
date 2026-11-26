@@ -70,7 +70,9 @@ function sanitizeProductFields(input: Omit<ProductItem, 'id'>): Omit<ProductItem
 
 export async function checkIsFirestoreAdmin(user: User | null): Promise<boolean> {
   if (!user || !user.emailVerified) return false;
-  if (user.email === BOOTSTRAPPED_ADMIN_EMAIL) return true;
+  if ((user.email ?? '').trim().toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase()) {
+    return true;
+  }
 
   const path = `admins/${user.uid}`;
   try {
@@ -244,8 +246,20 @@ export async function createProductInFirestore(
   payload: Omit<ProductItem, 'id'>,
 ): Promise<ProductItem> {
   const clean = sanitizeProductFields(payload);
-  const nextId =
+  let nextId =
     currentProducts.reduce((maxId, item) => (item.id > maxId ? item.id : maxId), 0) + 1;
+
+  // Ensure we pick an unused document ID so setDoc always triggers create rather than update
+  while (nextId <= 1000000) {
+    try {
+      const existing = await getDoc(doc(db, 'products', String(nextId)));
+      if (!existing.exists()) break;
+      nextId += 1;
+    } catch {
+      break;
+    }
+  }
+
   const docId = String(nextId);
   const path = `products/${docId}`;
 
@@ -269,6 +283,7 @@ export async function createProductInFirestore(
 }
 
 export async function updateProductInFirestore(
+  user: User,
   id: number,
   payload: Omit<ProductItem, 'id'>,
 ): Promise<ProductItem> {
@@ -276,18 +291,35 @@ export async function updateProductInFirestore(
   const productId = Math.floor(id);
   const docId = String(productId);
   const path = `products/${docId}`;
+  const ref = doc(db, 'products', docId);
 
   try {
-    await updateDoc(doc(db, 'products', docId), {
-      productId,
-      name: clean.name,
-      price: clean.price,
-      gemValue: clean.gemValue,
-      imageUrl: clean.imageUrl,
-      rarity: clean.rarity,
-      visibility: 'public',
-      updatedAt: serverTimestamp(),
-    });
+    const existingSnap = await getDoc(ref);
+    if (!existingSnap.exists()) {
+      await setDoc(ref, {
+        productId,
+        name: clean.name,
+        price: clean.price,
+        gemValue: clean.gemValue,
+        imageUrl: clean.imageUrl,
+        rarity: clean.rarity,
+        visibility: 'public',
+        createdBy: user.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await updateDoc(ref, {
+        productId,
+        name: clean.name,
+        price: clean.price,
+        gemValue: clean.gemValue,
+        imageUrl: clean.imageUrl,
+        rarity: clean.rarity,
+        visibility: 'public',
+        updatedAt: serverTimestamp(),
+      });
+    }
     return {id: productId, ...clean};
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
