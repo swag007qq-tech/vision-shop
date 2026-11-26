@@ -1,4 +1,7 @@
-export type RarityCode = '' | 'N' | 'M' | 'R' | 'F';
+export type RarityToken = 'N' | 'M' | 'R' | 'F';
+export type RarityCode = string;
+
+export const MAX_RARITY_BADGES = 3;
 
 export interface ProductItem {
   id: number;
@@ -9,8 +12,37 @@ export interface ProductItem {
   rarity: RarityCode;
 }
 
+export function parseRarityCodes(rarity: string | undefined | null): RarityToken[] {
+  if (!rarity) return [];
+  const result: RarityToken[] = [];
+  for (const ch of rarity.toUpperCase()) {
+    if (ch === 'N' || ch === 'M' || ch === 'R' || ch === 'F') {
+      result.push(ch);
+      if (result.length >= MAX_RARITY_BADGES) break;
+    }
+  }
+  return result;
+}
+
+export function normalizeRarityString(rarity: string | undefined | null): RarityCode {
+  return parseRarityCodes(rarity).join('');
+}
+
+export function toggleRarityToken(current: string, token: RarityToken): RarityCode {
+  const tokens = parseRarityCodes(current);
+  const existingIndex = tokens.indexOf(token);
+  if (existingIndex !== -1) {
+    tokens.splice(existingIndex, 1);
+    return tokens.join('');
+  }
+  if (tokens.length >= MAX_RARITY_BADGES) {
+    return tokens.join('');
+  }
+  return [...tokens, token].join('');
+}
+
 export const RARITY_OPTIONS: Array<{
-  code: Exclude<RarityCode, ''>;
+  code: RarityToken;
   label: string;
   src: string;
   isSquare?: boolean;

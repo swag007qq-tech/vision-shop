@@ -29,10 +29,9 @@
         },
         "rarity": {
           "type": "string",
-          "description": "Optional rarity badge code.",
-          "enum": ["", "N", "M", "R", "F"],
-          "maxLength": 1,
-          "pattern": "^(|N|M|R|F)$"
+          "description": "Optional rarity badge codes (up to 3 icons: N, M, R, F).",
+          "maxLength": 3,
+          "pattern": "^[NMRF]{0,3}$"
         },
         "visibility": {
           "type": "string",

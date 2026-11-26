@@ -13,7 +13,7 @@ import {
   where,
   writeBatch,
 } from 'firebase/firestore';
-import {ProductItem, RarityCode} from '../data/products';
+import {ProductItem, RarityCode, normalizeRarityString} from '../data/products';
 import {
   BOOTSTRAPPED_ADMIN_EMAIL,
   OperationType,
@@ -28,8 +28,9 @@ export interface AdminRecord {
 }
 
 function sanitizeRarity(rarity: string | undefined): RarityCode {
-  if (rarity && SCHEMA_LIMITS.RARITY_PATTERN.test(rarity)) {
-    return rarity as RarityCode;
+  const normalized = normalizeRarityString(rarity);
+  if (SCHEMA_LIMITS.RARITY_PATTERN.test(normalized)) {
+    return normalized;
   }
   return '';
 }

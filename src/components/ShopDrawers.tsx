@@ -131,7 +131,7 @@ export function FavoritesDrawer({
                         <GemIcon className="w-3.5 h-3.5 shrink-0" />
                         <span>{item.gemValue}</span>
                         {item.rarity && (
-                          <RarityBadge rarity={item.rarity} sizeClass="w-4 h-4 ml-1" />
+                          <RarityBadge rarity={item.rarity} sizeClass="w-4 h-4" className="ml-1" />
                         )}
                       </div>
                     </div>
@@ -304,7 +304,11 @@ export function CartDrawer({
                         <span aria-hidden="true">·</span>
                         <span>{product.price} ₴ / шт</span>
                         {product.rarity && (
-                          <RarityBadge rarity={product.rarity} sizeClass="w-4 h-4 ml-0.5" />
+                          <RarityBadge
+                            rarity={product.rarity}
+                            sizeClass="w-4 h-4"
+                            className="ml-0.5"
+                          />
                         )}
                       </div>
                     </div>

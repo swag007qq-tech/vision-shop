@@ -91,8 +91,8 @@ service cloud.firestore {
           || data.imageUrl.matches('^data:image/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$')
         )
         && data.rarity is string
-        && data.rarity.size() <= 1
-        && data.rarity.matches('^(|N|M|R|F)$')
+        && data.rarity.size() <= 3
+        && data.rarity.matches('^[NMRF]{0,3}$')
         && data.visibility is string
         && data.visibility.size() <= 16
         && data.visibility == 'public'

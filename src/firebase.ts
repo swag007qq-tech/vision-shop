@@ -46,7 +46,7 @@ export const SCHEMA_LIMITS = {
   MAX_PRICE: 1000000,
   MAX_GEM_VALUE: 1000000,
   MAX_CART_QUANTITY: 999,
-  RARITY_PATTERN: /^(|N|M|R|F)$/,
+  RARITY_PATTERN: /^[NMRF]{0,3}$/,
   ID_PATTERN: /^[a-zA-Z0-9_-]+$/,
 } as const;
 
@@ -81,8 +81,18 @@ export function handleFirestoreError(
   operationType: OperationType,
   path: string | null,
 ): never {
+  const firebaseCode =
+    error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+      ? error.code
+      : '';
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const formattedError =
+    firebaseCode && !rawMessage.includes(firebaseCode)
+      ? `[${firebaseCode}] ${rawMessage}`
+      : rawMessage;
+
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: formattedError,
     authInfo: {
       userId: auth.currentUser?.uid,
       email: auth.currentUser?.email,

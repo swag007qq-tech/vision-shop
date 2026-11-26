@@ -15,14 +15,21 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import {ProductItem, RARITY_OPTIONS, RarityCode} from '../data/products';
-import {ADMIN_LOGIN_EMAIL, FIREBASE_TARGET_INFO} from '../firebase';
+import {
+  MAX_RARITY_BADGES,
+  ProductItem,
+  RARITY_OPTIONS,
+  RarityCode,
+  parseRarityCodes,
+  toggleRarityToken,
+} from '../data/products';
+import {ADMIN_LOGIN_EMAIL, FIREBASE_TARGET_INFO, auth} from '../firebase';
 import {
   createProductInFirestore,
   deleteProductFromFirestore,
   updateProductInFirestore,
 } from '../services/firestoreService';
-import {RarityBadge} from './RarityBadge';
+import {RarityBadge, SingleRarityIcon} from './RarityBadge';
 import {GemIcon, PlaceholderStarIcon} from './VisionIllustrations';
 
 interface AdminModalProps {
@@ -54,32 +61,50 @@ const EMPTY_FORM: ProductFormState = {
   rarity: '',
 };
 
-function extractReadableErrorMessage(error: unknown): string {
+interface ParsedErrorDetails {
+  message: string;
+  path?: string | null;
+  operation?: string;
+}
+
+function extractReadableErrorDetails(error: unknown): ParsedErrorDetails {
   const raw = error instanceof Error ? error.message : String(error);
+  const code =
+    error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+      ? error.code
+      : '';
+
   if (raw.startsWith('{')) {
     try {
-      const parsed = JSON.parse(raw) as {error?: unknown};
+      const parsed = JSON.parse(raw) as {
+        error?: unknown;
+        path?: unknown;
+        operationType?: unknown;
+      };
       if (typeof parsed.error === 'string' && parsed.error.trim()) {
-        return parsed.error.trim();
+        return {
+          message: parsed.error.trim(),
+          path: typeof parsed.path === 'string' ? parsed.path : null,
+          operation:
+            typeof parsed.operationType === 'string' ? parsed.operationType : undefined,
+        };
       }
     } catch {
       // ignore non-JSON messages
     }
   }
-  return raw;
+
+  const withCode = code && !raw.includes(code) ? `[${code}] ${raw}` : raw;
+  return {message: withCode};
 }
 
 function formatPasswordAuthError(error: unknown): string {
-  const msg = extractReadableErrorMessage(error);
-  const lower = msg.toLowerCase();
+  const {message: msg} = extractReadableErrorDetails(error);
   if (msg === 'EMAIL_NOT_VERIFIED') {
     return `На ${ADMIN_LOGIN_EMAIL} отправлена одноразовая ссылка подтверждения. Перейдите по ней и снова нажмите «Войти».`;
   }
   if (msg === 'NOT_ADMIN_ACCOUNT') {
     return `Доступ к базе разрешён только владельцу (${ADMIN_LOGIN_EMAIL}) с подтверждённым email.`;
-  }
-  if (lower.includes('permission') || lower.includes('insufficient')) {
-    return `Нет доступа к базе Firestore. Проверьте, что правила firestore.rules развёрнуты в Firebase и вход выполнен в ${ADMIN_LOGIN_EMAIL}.`;
   }
   if (msg.includes('auth/operation-not-allowed')) {
     return 'В Firebase не включён вход по паролю (Email/Password). Откройте Firebase Console → Authentication → Sign-in method → Email/Password и включите его.';
@@ -102,13 +127,16 @@ function formatFirestorePanelError(
   fallback: string,
   userEmail?: string | null,
 ): string {
-  const msg = extractReadableErrorMessage(error);
-  const lower = msg.toLowerCase();
-  if (lower.includes('permission') || lower.includes('insufficient')) {
-    const activeEmail = userEmail || ADMIN_LOGIN_EMAIL;
-    return `Нет прав на изменение товаров в Firestore (проект: ${FIREBASE_TARGET_INFO.projectId}, база: ${FIREBASE_TARGET_INFO.databaseId}, аккаунт: ${activeEmail}). Убедитесь, что правила опубликованы именно для этого проекта и базы.`;
-  }
-  return msg || fallback;
+  const {message, path, operation} = extractReadableErrorDetails(error);
+  const exactMessage = message || fallback;
+  const metaParts: string[] = [];
+  if (operation) metaParts.push(`операция: ${operation}`);
+  if (path) metaParts.push(`путь: ${path}`);
+  metaParts.push(`проект: ${FIREBASE_TARGET_INFO.projectId}`);
+  metaParts.push(`база: ${FIREBASE_TARGET_INFO.databaseId}`);
+  if (userEmail) metaParts.push(`аккаунт: ${userEmail}`);
+
+  return `Ошибка Firebase: ${exactMessage} (${metaParts.join(', ')})`;
 }
 
 function RaritySelector({
@@ -118,41 +146,70 @@ function RaritySelector({
   value: RarityCode;
   onChange: (next: RarityCode) => void;
 }) {
+  const selectedTokens = parseRarityCodes(value);
+  const maxReached = selectedTokens.length >= MAX_RARITY_BADGES;
+
   return (
     <div>
-      <span className="block text-[12px] font-bold text-[#141414] mb-1.5">
-        Редкость (необязательно)
-      </span>
+      <div className="flex items-center justify-between gap-2 mb-1.5 flex-wrap">
+        <span className="text-[12px] font-bold text-[#141414]">
+          Редкость — до {MAX_RARITY_BADGES} значков (необязательно)
+        </span>
+        <div className="flex items-center gap-2">
+          {selectedTokens.length > 0 && (
+            <RarityBadge rarity={value} sizeClass="w-5 h-5" gapClass="gap-1" />
+          )}
+          <span className="text-[11px] font-bold text-neutral-500 tabular-nums">
+            Выбрано: {selectedTokens.length} / {MAX_RARITY_BADGES}
+          </span>
+        </div>
+      </div>
+
       <div className="flex items-center gap-2 flex-wrap">
         <button
           type="button"
           onClick={() => onChange('')}
           className={`px-3 py-1.5 min-h-[38px] rounded-xl text-[12px] font-bold border transition-colors cursor-pointer ${
-            value === ''
+            selectedTokens.length === 0
               ? 'bg-[#141414] text-white border-[#141414]'
               : 'bg-white text-neutral-700 border-black/25 hover:bg-neutral-100'
           }`}
         >
-          Без знака
+          Без знаков
         </button>
 
         {RARITY_OPTIONS.map((opt) => {
-          const active = value === opt.code;
+          const orderIndex = selectedTokens.indexOf(opt.code);
+          const active = orderIndex !== -1;
+          const disabled = !active && maxReached;
+
           return (
             <button
               key={opt.code}
               type="button"
-              onClick={() => onChange(active ? '' : opt.code)}
+              disabled={disabled}
+              onClick={() => onChange(toggleRarityToken(value, opt.code))}
               aria-pressed={active}
-              title={`Редкость ${opt.label}`}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 min-h-[38px] rounded-xl border transition-all cursor-pointer ${
+              title={
+                disabled
+                  ? `Можно выбрать максимум ${MAX_RARITY_BADGES} значка`
+                  : `Редкость ${opt.label}`
+              }
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 min-h-[38px] rounded-xl border transition-all ${
                 active
-                  ? 'border-[#141414] bg-neutral-100 ring-2 ring-[#141414]'
-                  : 'border-black/20 bg-white hover:bg-neutral-50'
+                  ? 'border-[#141414] bg-neutral-100 ring-2 ring-[#141414] cursor-pointer'
+                  : disabled
+                    ? 'border-black/15 bg-neutral-50 opacity-45 cursor-not-allowed'
+                    : 'border-black/20 bg-white hover:bg-neutral-50 cursor-pointer'
               }`}
             >
-              <RarityBadge rarity={opt.code} sizeClass="w-6 h-6" />
+              <SingleRarityIcon token={opt.code} sizeClass="w-6 h-6" />
               <span className="text-[12px] font-extrabold text-[#141414]">{opt.label}</span>
+              {active && (
+                <span className="w-4 h-4 rounded-full bg-[#141414] text-white text-[10px] font-extrabold inline-flex items-center justify-center tabular-nums">
+                  {orderIndex + 1}
+                </span>
+              )}
             </button>
           );
         })}
@@ -186,6 +243,9 @@ export function AdminModal({
   const [panelError, setPanelError] = useState('');
   const [saving, setSaving] = useState(false);
 
+  const productsRef = React.useRef(products);
+  productsRef.current = products;
+
   useEffect(() => {
     if (!open) return;
     setPassword('');
@@ -194,7 +254,7 @@ export function AdminModal({
     setConfirmDeleteId(null);
 
     if (initialEditProductId) {
-      const target = products.find((p) => p.id === initialEditProductId);
+      const target = productsRef.current.find((p) => p.id === initialEditProductId);
       if (target) {
         setEditingId(target.id);
         setEditForm({
@@ -206,7 +266,7 @@ export function AdminModal({
         });
       }
     }
-  }, [open, initialEditProductId, products]);
+  }, [open, initialEditProductId]);
 
   useEffect(() => {
     if (!open) return;
@@ -263,8 +323,13 @@ export function AdminModal({
 
   const handleCreateProduct = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isFirestoreAdmin || !authUser) return;
     setPanelError('');
+
+    const activeUser = authUser ?? auth.currentUser;
+    if (!isFirestoreAdmin || !activeUser) {
+      setPanelError('Сессия администратора неактивна. Войдите в админ-панель заново.');
+      return;
+    }
 
     const priceNum = Number(addForm.price.replace(',', '.'));
     const gemNum = Number(addForm.gemValue.replace(',', '.'));
@@ -287,7 +352,7 @@ export function AdminModal({
 
     setSaving(true);
     try {
-      await authUser.getIdToken(true).catch(() => undefined);
+      await activeUser.getIdToken(true).catch(() => undefined);
       if (firestoreProductIds.size === 0 && products.length > 0) {
         try {
           await onSeedFirestore();
@@ -295,7 +360,7 @@ export function AdminModal({
           // Do not block adding a new item if initial seed collides with existing records
         }
       }
-      await createProductInFirestore(authUser, products, payload);
+      await createProductInFirestore(activeUser, products, payload);
       setAddForm(EMPTY_FORM);
       setShowAddForm(false);
     } catch (error) {
@@ -303,7 +368,7 @@ export function AdminModal({
         formatFirestorePanelError(
           error,
           'Ошибка при сохранении товара в базу',
-          authUser.email,
+          activeUser.email,
         ),
       );
     } finally {
@@ -312,8 +377,13 @@ export function AdminModal({
   };
 
   const handleSaveEdit = async (id: number) => {
-    if (!isFirestoreAdmin || !authUser) return;
     setPanelError('');
+
+    const activeUser = authUser ?? auth.currentUser;
+    if (!isFirestoreAdmin || !activeUser) {
+      setPanelError('Сессия администратора неактивна. Войдите в админ-панель заново.');
+      return;
+    }
 
     const priceNum = Number(editForm.price.replace(',', '.'));
     const gemNum = Number(editForm.gemValue.replace(',', '.'));
@@ -336,7 +406,7 @@ export function AdminModal({
 
     setSaving(true);
     try {
-      await authUser.getIdToken(true).catch(() => undefined);
+      await activeUser.getIdToken(true).catch(() => undefined);
       if (firestoreProductIds.size === 0 && products.length > 0) {
         try {
           await onSeedFirestore(id);
@@ -344,14 +414,14 @@ export function AdminModal({
           // Continue updating the target product even if other placeholders were skipped
         }
       }
-      await updateProductInFirestore(authUser, id, payload);
+      await updateProductInFirestore(activeUser, id, payload);
       setEditingId(null);
     } catch (error) {
       setPanelError(
         formatFirestorePanelError(
           error,
           'Ошибка при обновлении товара в базе',
-          authUser.email,
+          activeUser.email,
         ),
       );
     } finally {
@@ -360,11 +430,17 @@ export function AdminModal({
   };
 
   const handleDeleteProduct = async (id: number) => {
-    if (!isFirestoreAdmin || !authUser) return;
     setPanelError('');
+
+    const activeUser = authUser ?? auth.currentUser;
+    if (!isFirestoreAdmin || !activeUser) {
+      setPanelError('Сессия администратора неактивна. Войдите в админ-панель заново.');
+      return;
+    }
+
     setSaving(true);
     try {
-      await authUser.getIdToken(true).catch(() => undefined);
+      await activeUser.getIdToken(true).catch(() => undefined);
       if (firestoreProductIds.size === 0 && products.length > 0) {
         await onSeedFirestore(id);
       } else {
@@ -377,7 +453,7 @@ export function AdminModal({
         formatFirestorePanelError(
           error,
           'Ошибка при удалении товара из базы',
-          authUser.email,
+          activeUser.email,
         ),
       );
     } finally {
@@ -609,7 +685,8 @@ export function AdminModal({
 
                       <div className="flex flex-col sm:flex-row gap-2.5 items-stretch sm:items-center">
                         <input
-                          type="url"
+                          type="text"
+                          inputMode="url"
                           value={addForm.imageUrl.startsWith('data:') ? '' : addForm.imageUrl}
                           onChange={(e) =>
                             setAddForm((f) => ({...f, imageUrl: e.target.value}))
@@ -824,7 +901,8 @@ export function AdminModal({
 
                               <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
                                 <input
-                                  type="url"
+                                  type="text"
+                                  inputMode="url"
                                   value={
                                     editForm.imageUrl.startsWith('data:') ? '' : editForm.imageUrl
                                   }

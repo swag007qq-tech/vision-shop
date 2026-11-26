@@ -1,7 +1,7 @@
 import React, {useEffect, useState} from 'react';
 import {AnimatePresence, motion} from 'motion/react';
 import {Check, ChevronLeft, ChevronRight, Heart, Pencil} from 'lucide-react';
-import {ProductItem} from '../data/products';
+import {ProductItem, parseRarityCodes} from '../data/products';
 import {RarityBadge} from './RarityBadge';
 import {
   GemIcon,
@@ -235,22 +235,25 @@ export function ProductGrid({
                       )}
                     </div>
 
-                    {(item.rarity || (isAdmin && onQuickEdit)) && (
-                      <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5">
-                        {item.rarity && (
-                          <RarityBadge rarity={item.rarity} sizeClass="w-8 h-8 sm:w-9 sm:h-9" />
-                        )}
-                        {isAdmin && onQuickEdit && (
-                          <button
-                            type="button"
-                            onClick={() => onQuickEdit(item.id)}
-                            aria-label="Редактировать товар"
-                            className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white border border-[#141414] flex items-center justify-center text-[#141414] hover:bg-neutral-50 active:scale-90 transition-transform cursor-pointer shadow-sm"
-                          >
-                            <Pencil className="w-4 h-4" />
-                          </button>
-                        )}
+                    {parseRarityCodes(item.rarity).length > 0 && (
+                      <div className="absolute top-2.5 left-2.5 z-10 pointer-events-none">
+                        <RarityBadge
+                          rarity={item.rarity}
+                          sizeClass="w-7 h-7 sm:w-8 sm:h-8"
+                          gapClass="gap-1"
+                        />
                       </div>
+                    )}
+
+                    {isAdmin && onQuickEdit && (
+                      <button
+                        type="button"
+                        onClick={() => onQuickEdit(item.id)}
+                        aria-label="Редактировать товар"
+                        className="absolute bottom-2 right-2 z-10 w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white border border-[#141414] flex items-center justify-center text-[#141414] hover:bg-neutral-50 active:scale-90 transition-transform cursor-pointer shadow-sm"
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </button>
                     )}
 
                     {/* Heart icon button in top-right with burst animation */}
