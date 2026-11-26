@@ -25,10 +25,10 @@ import {
 } from '../data/products';
 import {ADMIN_LOGIN_EMAIL, FIREBASE_TARGET_INFO, auth} from '../firebase';
 import {
-  createProductInFirestore,
-  deleteProductFromFirestore,
-  updateProductInFirestore,
-} from '../services/firestoreService';
+  createProductInRtdb,
+  deleteProductFromRtdb,
+  updateProductInRtdb,
+} from '../services/realtimeDbService';
 import {RarityBadge, SingleRarityIcon} from './RarityBadge';
 import {GemIcon, PlaceholderStarIcon} from './VisionIllustrations';
 
@@ -36,12 +36,12 @@ interface AdminModalProps {
   open: boolean;
   onClose: () => void;
   authUser: User | null;
-  isFirestoreAdmin: boolean;
+  isAdmin: boolean;
   onPasswordSignIn: (password: string) => Promise<void>;
   onLogout: () => void;
-  firestoreProductIds: Set<number>;
-  firestoreReadError?: string;
-  onSeedFirestore: (excludeId?: number) => Promise<void>;
+  dbProductIds: Set<number>;
+  dbReadError?: string;
+  onSeedDatabase: (excludeId?: number) => Promise<void>;
   products: ProductItem[];
   initialEditProductId?: number | null;
 }
@@ -123,7 +123,7 @@ function formatPasswordAuthError(error: unknown): string {
   return msg || 'Не удалось выполнить вход';
 }
 
-function formatFirestorePanelError(
+function formatDatabasePanelError(
   error: unknown,
   fallback: string,
   userEmail?: string | null,
@@ -223,12 +223,12 @@ export function AdminModal({
   open,
   onClose,
   authUser,
-  isFirestoreAdmin,
+  isAdmin,
   onPasswordSignIn,
   onLogout,
-  firestoreProductIds,
-  firestoreReadError = '',
-  onSeedFirestore,
+  dbProductIds,
+  dbReadError = '',
+  onSeedDatabase,
   products,
   initialEditProductId = null,
 }: AdminModalProps) {
@@ -328,7 +328,7 @@ export function AdminModal({
     setPanelError('');
 
     const activeUser = authUser ?? auth.currentUser;
-    if (!isFirestoreAdmin || !activeUser) {
+    if (!isAdmin || !activeUser) {
       setPanelError('Сессия администратора неактивна. Войдите в админ-панель заново.');
       return;
     }
@@ -355,19 +355,19 @@ export function AdminModal({
     setSaving(true);
     try {
       await activeUser.getIdToken(true).catch(() => undefined);
-      if (firestoreProductIds.size === 0 && products.length > 0) {
+      if (dbProductIds.size === 0 && products.length > 0) {
         try {
-          await onSeedFirestore();
+          await onSeedDatabase();
         } catch {
           // Do not block adding a new item if initial seed collides with existing records
         }
       }
-      await createProductInFirestore(activeUser, products, payload);
+      await createProductInRtdb(activeUser, products, payload);
       setAddForm(EMPTY_FORM);
       setShowAddForm(false);
     } catch (error) {
       setPanelError(
-        formatFirestorePanelError(
+        formatDatabasePanelError(
           error,
           'Ошибка при сохранении товара в базу',
           activeUser.email,
@@ -382,7 +382,7 @@ export function AdminModal({
     setPanelError('');
 
     const activeUser = authUser ?? auth.currentUser;
-    if (!isFirestoreAdmin || !activeUser) {
+    if (!isAdmin || !activeUser) {
       setPanelError('Сессия администратора неактивна. Войдите в админ-панель заново.');
       return;
     }
@@ -409,18 +409,18 @@ export function AdminModal({
     setSaving(true);
     try {
       await activeUser.getIdToken(true).catch(() => undefined);
-      if (firestoreProductIds.size === 0 && products.length > 0) {
+      if (dbProductIds.size === 0 && products.length > 0) {
         try {
-          await onSeedFirestore(id);
+          await onSeedDatabase(id);
         } catch {
           // Continue updating the target product even if other placeholders were skipped
         }
       }
-      await updateProductInFirestore(activeUser, id, payload);
+      await updateProductInRtdb(activeUser, id, payload);
       setEditingId(null);
     } catch (error) {
       setPanelError(
-        formatFirestorePanelError(
+        formatDatabasePanelError(
           error,
           'Ошибка при обновлении товара в базе',
           activeUser.email,
@@ -435,7 +435,7 @@ export function AdminModal({
     setPanelError('');
 
     const activeUser = authUser ?? auth.currentUser;
-    if (!isFirestoreAdmin || !activeUser) {
+    if (!isAdmin || !activeUser) {
       setPanelError('Сессия администратора неактивна. Войдите в админ-панель заново.');
       return;
     }
@@ -443,16 +443,16 @@ export function AdminModal({
     setSaving(true);
     try {
       await activeUser.getIdToken(true).catch(() => undefined);
-      if (firestoreProductIds.size === 0 && products.length > 0) {
-        await onSeedFirestore(id);
+      if (dbProductIds.size === 0 && products.length > 0) {
+        await onSeedDatabase(id);
       } else {
-        await deleteProductFromFirestore(id);
+        await deleteProductFromRtdb(id);
       }
       setConfirmDeleteId(null);
       if (editingId === id) setEditingId(null);
     } catch (error) {
       setPanelError(
-        formatFirestorePanelError(
+        formatDatabasePanelError(
           error,
           'Ошибка при удалении товара из базы',
           activeUser.email,
@@ -487,26 +487,26 @@ export function AdminModal({
             exit={{opacity: 0, scale: 0.96, y: 12}}
             transition={{duration: 0.2, ease: [0.16, 1, 0.3, 1]}}
             className={`relative z-10 w-full ${
-              isFirestoreAdmin ? 'max-w-[660px]' : 'max-w-[440px]'
+              isAdmin ? 'max-w-[660px]' : 'max-w-[440px]'
             } max-h-[90vh] bg-white border-[2px] border-[#141414] rounded-[28px] sm:rounded-[34px] shadow-2xl flex flex-col overflow-hidden`}
           >
             {/* Header */}
             <div className="flex items-center justify-between gap-3 px-4 sm:px-6 py-4 border-b border-black/10">
               <div className="flex items-center gap-2.5 min-w-0">
                 <span className="w-9 h-9 rounded-full bg-[#141414] text-white flex items-center justify-center shrink-0">
-                  {isFirestoreAdmin ? (
+                  {isAdmin ? (
                     <ShieldCheck className="w-5 h-5" />
                   ) : (
                     <KeyRound className="w-4 h-4" />
                   )}
                 </span>
                 <h2 className="text-[17px] sm:text-[20px] font-extrabold text-[#141414] truncate">
-                  {isFirestoreAdmin ? 'Админ-панель' : 'Вход администратора'}
+                  {isAdmin ? 'Админ-панель' : 'Вход администратора'}
                 </h2>
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
-                {isFirestoreAdmin && (
+                {isAdmin && (
                   <button
                     type="button"
                     onClick={onLogout}
@@ -529,7 +529,7 @@ export function AdminModal({
             </div>
 
             {/* Content */}
-            {!isFirestoreAdmin ? (
+            {!isAdmin ? (
               <div className="p-5 sm:p-6 space-y-4 overflow-y-auto">
                 <form onSubmit={handlePasswordSubmit} className="space-y-4">
                   <p className="text-[14px] font-semibold text-neutral-600 leading-snug">
@@ -601,13 +601,13 @@ export function AdminModal({
                   </div>
                 </div>
 
-                {firestoreReadError && (
+                {dbReadError && (
                   <div
                     role="alert"
                     className="p-3 rounded-2xl bg-amber-50 border border-amber-300 text-[12px] font-bold text-amber-900 leading-snug"
                   >
-                    Firestore отклонил чтение каталога: {firestoreReadError}. Проверьте правила
-                    Firestore Database → Rules в проекте {FIREBASE_TARGET_INFO.projectId}.
+                    Realtime Database отклонила чтение каталога: {dbReadError}. Проверьте правила
+                    Realtime Database → Rules в проекте {FIREBASE_TARGET_INFO.projectId}.
                   </div>
                 )}
 

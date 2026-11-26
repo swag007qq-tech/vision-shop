@@ -3,6 +3,7 @@
   "appId": "1:994307323157:web:b0a2b4a581b058435a251c",
   "apiKey": "AIzaSyA_ces5N49v-JQKnwApc4HdzP0uvIjgNec",
   "authDomain": "my-shop-f8944.firebaseapp.com",
+  "databaseURL": "https://my-shop-f8944-default-rtdb.firebaseio.com",
   "firestoreDatabaseId": "(default)",
   "storageBucket": "my-shop-f8944.firebasestorage.app",
   "messagingSenderId": "994307323157",

@@ -1,0 +1,13 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "products": {
+      ".read": true,
+      ".write": "auth != null && auth.token.email_verified == true && auth.token.email == 'swag007qq@gmail.com'",
+      "$productId": {
+        ".validate": "newData.hasChildren(['productId', 'name', 'price', 'gemValue', 'imageUrl', 'rarity', 'visibility', 'createdBy', 'createdAt', 'updatedAt']) && newData.child('productId').isNumber() && newData.child('productId').val() > 0 && newData.child('name').isString() && newData.child('name').val().length <= 80 && newData.child('price').isNumber() && newData.child('price').val() >= 0 && newData.child('price').val() <= 1000000 && newData.child('gemValue').isNumber() && newData.child('gemValue').val() >= 0 && newData.child('gemValue').val() <= 1000000 && newData.child('imageUrl').isString() && newData.child('imageUrl').val().length <= 900000 && newData.child('rarity').isString() && newData.child('rarity').val().matches(/^[NMRF]{0,3}$/) && newData.child('visibility').val() == 'public'"
+      }
+    }
+  }
+}

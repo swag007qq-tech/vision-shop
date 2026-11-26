@@ -1,7 +1,9 @@
 import {initializeApp} from 'firebase/app';
 import {getAuth} from 'firebase/auth';
-import {doc, getDocFromServer, getFirestore} from 'firebase/firestore';
+import {get, getDatabase, ref} from 'firebase/database';
 import firebaseConfig from '../firebase-applet-config.json';
+
+const DEFAULT_RTDB_INSTANCE = 'my-shop-f8944-default-rtdb';
 
 const resolvedProjectId = (
   import.meta.env.VITE_FIREBASE_PROJECT_ID || firebaseConfig.projectId
@@ -14,49 +16,38 @@ const resolvedAuthDomain =
     ? rawAuthDomain
     : `${resolvedProjectId}.firebaseapp.com`;
 
+const customRtdbUrl = (import.meta.env.VITE_FIREBASE_DATABASE_URL || '').trim();
+const resolvedDatabaseUrl =
+  customRtdbUrl && customRtdbUrl !== 'https://firebaseio.com'
+    ? customRtdbUrl
+    : `https://${DEFAULT_RTDB_INSTANCE}.firebaseio.com`;
+
 const resolvedConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || firebaseConfig.apiKey,
   authDomain: resolvedAuthDomain,
   projectId: resolvedProjectId,
+  databaseURL: resolvedDatabaseUrl,
   storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || firebaseConfig.storageBucket,
   messagingSenderId:
     import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseConfig.messagingSenderId,
   appId: import.meta.env.VITE_FIREBASE_APP_ID || firebaseConfig.appId,
 };
 
-const isAiStudioDefaultProject = resolvedProjectId === 'gen-lang-client-0460356534';
-const rawCustomDatabaseId = (import.meta.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID || '').trim();
-const safeCustomDatabaseId =
-  !isAiStudioDefaultProject && rawCustomDatabaseId.startsWith('ai-studio-')
-    ? ''
-    : rawCustomDatabaseId;
-
-const resolvedDatabaseId =
-  safeCustomDatabaseId ||
-  (resolvedProjectId !== firebaseConfig.projectId
-    ? '(default)'
-    : firebaseConfig.firestoreDatabaseId);
-
 const app = initializeApp(resolvedConfig);
 
-// CRITICAL: Use default Firestore instance when databaseId is "(default)"
-export const db =
-  resolvedDatabaseId && resolvedDatabaseId !== '(default)'
-    ? getFirestore(app, resolvedDatabaseId)
-    : getFirestore(app);
-
+export const rtdb = getDatabase(app, resolvedDatabaseUrl);
 export const auth = getAuth(app);
 
 export const FIREBASE_TARGET_INFO = {
   projectId: resolvedConfig.projectId,
-  databaseId: resolvedDatabaseId || '(default)',
+  databaseId: DEFAULT_RTDB_INSTANCE,
+  databaseUrl: resolvedDatabaseUrl,
 };
 
 export const BOOTSTRAPPED_ADMIN_EMAIL = 'swag007qq@gmail.com';
 export const ADMIN_LOGIN_EMAIL =
   (import.meta.env.VITE_ADMIN_EMAIL || '').trim() || BOOTSTRAPPED_ADMIN_EMAIL;
 
-// Schema limits synchronized verbatim with firebase-blueprint.json & firestore.rules
 export const SCHEMA_LIMITS = {
   PRODUCT_NAME_MAX_LENGTH: 80,
   PRODUCT_IMAGE_MAX_LENGTH: 900000,
@@ -76,7 +67,7 @@ export enum OperationType {
   WRITE = 'write',
 }
 
-export interface FirestoreErrorInfo {
+export interface DatabaseErrorInfo {
   error: string;
   operationType: OperationType;
   path: string | null;
@@ -86,14 +77,10 @@ export interface FirestoreErrorInfo {
     emailVerified?: boolean | null;
     isAnonymous?: boolean | null;
     tenantId?: string | null;
-    providerInfo?: Array<{
-      providerId?: string | null;
-      email?: string | null;
-    }>;
   };
 }
 
-export function handleFirestoreError(
+export function handleDatabaseError(
   error: unknown,
   operationType: OperationType,
   path: string | null,
@@ -108,7 +95,7 @@ export function handleFirestoreError(
       ? `[${firebaseCode}] ${rawMessage}`
       : rawMessage;
 
-  const errInfo: FirestoreErrorInfo = {
+  const errInfo: DatabaseErrorInfo = {
     error: formattedError,
     authInfo: {
       userId: auth.currentUser?.uid,
@@ -116,25 +103,20 @@ export function handleFirestoreError(
       emailVerified: auth.currentUser?.emailVerified,
       isAnonymous: auth.currentUser?.isAnonymous,
       tenantId: auth.currentUser?.tenantId,
-      providerInfo:
-        auth.currentUser?.providerData?.map((provider) => ({
-          providerId: provider.providerId,
-          email: provider.email,
-        })) || [],
     },
     operationType,
     path,
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  console.error('Realtime Database Error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
 }
 
 async function testConnection(): Promise<void> {
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
+    await get(ref(rtdb, 'products'));
   } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
+    if (error instanceof Error && error.message.toLowerCase().includes('network')) {
+      console.warn('Realtime Database network check warning:', error.message);
     }
   }
 }

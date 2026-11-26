@@ -22,10 +22,10 @@ import {CartDrawer, CartEntry, FavoritesDrawer} from './components/ShopDrawers';
 import {DEFAULT_PRODUCTS, ProductItem} from './data/products';
 import {ADMIN_LOGIN_EMAIL, auth} from './firebase';
 import {
-  checkIsFirestoreAdmin,
+  checkIsRealtimeAdmin,
   seedProductsIfEmpty,
   subscribePublicProducts,
-} from './services/firestoreService';
+} from './services/realtimeDbService';
 
 const FAVORITES_STORAGE_KEY = 'vision_shop_favorites_v1';
 const CART_STORAGE_KEY = 'vision_shop_cart_v1';
@@ -69,10 +69,10 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('catalog');
   const [introFinished, setIntroFinished] = useState(false);
 
-  const [firestoreProducts, setFirestoreProducts] = useState<ProductItem[]>([]);
-  const [firestoreLoaded, setFirestoreLoaded] = useState(false);
-  const [firestoreSeeded, setFirestoreSeeded] = useState(false);
-  const [firestoreReadError, setFirestoreReadError] = useState<string>('');
+  const [rtdbProducts, setRtdbProducts] = useState<ProductItem[]>([]);
+  const [rtdbLoaded, setRtdbLoaded] = useState(false);
+  const [rtdbSeeded, setRtdbSeeded] = useState(false);
+  const [rtdbReadError, setRtdbReadError] = useState<string>('');
 
   const [favoriteIds, setFavoriteIds] = useState<number[]>(loadSavedFavorites);
   const [cartQuantities, setCartQuantities] = useState<Record<number, number>>(loadSavedCart);
@@ -83,7 +83,7 @@ export default function App() {
 
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
-  const [isFirestoreAdmin, setIsFirestoreAdmin] = useState(false);
+  const [isRealtimeAdmin, setIsRealtimeAdmin] = useState(false);
 
   // Track Firebase Authentication state
   useEffect(() => {
@@ -96,51 +96,51 @@ export default function App() {
           }
           if (user.emailVerified) {
             await user.getIdToken(true).catch(() => undefined);
-            const adminStatus = await checkIsFirestoreAdmin(user);
-            setIsFirestoreAdmin(adminStatus);
+            const adminStatus = await checkIsRealtimeAdmin(user);
+            setIsRealtimeAdmin(adminStatus);
           } else {
-            setIsFirestoreAdmin(false);
+            setIsRealtimeAdmin(false);
           }
         } catch (err) {
           console.error('Auth initialization error:', err);
-          setIsFirestoreAdmin(false);
+          setIsRealtimeAdmin(false);
         }
       } else {
-        setIsFirestoreAdmin(false);
+        setIsRealtimeAdmin(false);
       }
       setAuthReady(true);
     });
     return () => unsub();
   }, []);
 
-  // Subscribe to public Firestore product catalog in real time (serverless, works on Vercel)
+  // Subscribe to public Realtime Database product catalog in real time
   useEffect(() => {
     const unsub = subscribePublicProducts(
       (items) => {
-        setFirestoreProducts(items);
-        setFirestoreLoaded(true);
-        setFirestoreReadError('');
+        setRtdbProducts(items);
+        setRtdbLoaded(true);
+        setRtdbReadError('');
         if (items.length > 0) {
-          setFirestoreSeeded(true);
+          setRtdbSeeded(true);
         }
       },
       (error) => {
-        console.warn('Firestore catalog listener fallback:', error.message);
-        setFirestoreReadError(error.message);
-        setFirestoreLoaded(true);
+        console.warn('Realtime Database catalog listener fallback:', error.message);
+        setRtdbReadError(error.message);
+        setRtdbLoaded(true);
       },
     );
     return () => unsub();
   }, []);
 
-  // Auto-seed Firestore catalog on first admin sign-in when database is empty
+  // Auto-seed Realtime Database catalog on first admin sign-in when database is empty
   useEffect(() => {
-    if (!authReady || !isFirestoreAdmin || !authUser || !firestoreLoaded) return;
-    if (firestoreProducts.length === 0 && !firestoreSeeded) {
+    if (!authReady || !isRealtimeAdmin || !authUser || !rtdbLoaded) return;
+    if (rtdbProducts.length === 0 && !rtdbSeeded) {
       void seedProductsIfEmpty(authUser, DEFAULT_PRODUCTS)
         .then((seeded) => {
           if (seeded) {
-            setFirestoreSeeded(true);
+            setRtdbSeeded(true);
           }
         })
         .catch((err) => {
@@ -149,25 +149,25 @@ export default function App() {
     }
   }, [
     authReady,
-    isFirestoreAdmin,
+    isRealtimeAdmin,
     authUser,
-    firestoreLoaded,
-    firestoreProducts.length,
-    firestoreSeeded,
+    rtdbLoaded,
+    rtdbProducts.length,
+    rtdbSeeded,
   ]);
 
-  // Public catalog is synchronized via Firestore; favorites and cart remain per-device locally.
+  // Public catalog is synchronized via Firebase Realtime Database; favorites and cart remain per-device locally.
 
   const products = useMemo(() => {
-    if (firestoreProducts.length > 0 || firestoreSeeded) {
-      return firestoreProducts;
+    if (rtdbProducts.length > 0 || rtdbSeeded) {
+      return rtdbProducts;
     }
     return DEFAULT_PRODUCTS;
-  }, [firestoreProducts, firestoreSeeded]);
+  }, [rtdbProducts, rtdbSeeded]);
 
-  const firestoreProductIds = useMemo(
-    () => new Set(firestoreProducts.map((p) => p.id)),
-    [firestoreProducts],
+  const rtdbProductIds = useMemo(
+    () => new Set(rtdbProducts.map((p) => p.id)),
+    [rtdbProducts],
   );
 
   useEffect(() => {
@@ -199,12 +199,12 @@ export default function App() {
       throw new Error('EMAIL_NOT_VERIFIED');
     }
 
-    // Force-refresh JWT so Firestore rules receive email_verified: true immediately
+    // Force-refresh JWT so Realtime Database rules receive email_verified: true immediately
     await credential.user.getIdToken(true);
 
-    const adminStatus = await checkIsFirestoreAdmin(credential.user);
+    const adminStatus = await checkIsRealtimeAdmin(credential.user);
     setAuthUser(credential.user);
-    setIsFirestoreAdmin(adminStatus);
+    setIsRealtimeAdmin(adminStatus);
     if (!adminStatus) {
       throw new Error('NOT_ADMIN_ACCOUNT');
     }
@@ -212,20 +212,20 @@ export default function App() {
 
   const handleAdminSignOut = useCallback(async () => {
     await signOut(auth);
-    setIsFirestoreAdmin(false);
+    setIsRealtimeAdmin(false);
   }, []);
 
-  const handleSeedFirestore = useCallback(
+  const handleSeedDatabase = useCallback(
     async (excludeId?: number) => {
-      if (!authUser || !isFirestoreAdmin) return;
+      if (!authUser || !isRealtimeAdmin) return;
       const itemsToSeed =
         typeof excludeId === 'number'
           ? DEFAULT_PRODUCTS.filter((item) => item.id !== excludeId)
           : DEFAULT_PRODUCTS;
       await seedProductsIfEmpty(authUser, itemsToSeed);
-      setFirestoreSeeded(true);
+      setRtdbSeeded(true);
     },
-    [authUser, isFirestoreAdmin],
+    [authUser, isRealtimeAdmin],
   );
 
   const handleToggleFavorite = (id: number) => {
@@ -294,7 +294,7 @@ export default function App() {
         <HeaderBar
           activeTab={activeTab}
           onTabChange={setActiveTab}
-          isAdmin={isFirestoreAdmin}
+          isAdmin={isRealtimeAdmin}
           onOpenAdmin={() => {
             setQuickEditId(null);
             setAdminModalOpen(true);
@@ -308,7 +308,7 @@ export default function App() {
               favoriteIds={favoriteIds}
               onToggleFavorite={handleToggleFavorite}
               onAddToCart={handleAddToCart}
-              isAdmin={isFirestoreAdmin}
+              isAdmin={isRealtimeAdmin}
               onQuickEdit={(id) => {
                 setQuickEditId(id);
                 setAdminModalOpen(true);
@@ -350,14 +350,14 @@ export default function App() {
           setQuickEditId(null);
         }}
         authUser={authUser}
-        isFirestoreAdmin={isFirestoreAdmin}
+        isAdmin={isRealtimeAdmin}
         onPasswordSignIn={handlePasswordSignIn}
         onLogout={() => {
           void handleAdminSignOut();
         }}
-        firestoreProductIds={firestoreProductIds}
-        firestoreReadError={firestoreReadError}
-        onSeedFirestore={handleSeedFirestore}
+        dbProductIds={rtdbProductIds}
+        dbReadError={rtdbReadError}
+        onSeedDatabase={handleSeedDatabase}
         products={products}
         initialEditProductId={quickEditId}
       />
