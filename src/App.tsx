@@ -78,27 +78,25 @@ export default function App() {
 
   const isAdmin = Boolean(adminToken);
 
+  const refreshAdminStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/admin/status', {cache: 'no-store'});
+      if (!res.ok) return;
+      const data = (await res.json()) as {configured?: boolean; authenticated?: boolean};
+      if (typeof data.configured === 'boolean') {
+        setAdminConfigured(data.configured);
+      }
+    } catch {
+      // Keep current configured state if status endpoint is temporarily unreachable
+    } finally {
+      setAuthReady(true);
+    }
+  }, []);
+
   // Check server admin passcode configuration status on mount
   useEffect(() => {
-    let active = true;
-    fetch('/api/admin/status', {cache: 'no-store'})
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: {configured?: boolean; authenticated?: boolean} | null) => {
-        if (!active) return;
-        if (data && typeof data.configured === 'boolean') {
-          setAdminConfigured(data.configured);
-        }
-      })
-      .catch(() => {
-        // Keep default configured state if server status check fails transiently
-      })
-      .finally(() => {
-        if (active) setAuthReady(true);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
+    void refreshAdminStatus();
+  }, [refreshAdminStatus]);
 
   // Subscribe to public Realtime Database product catalog via REST API
   useEffect(() => {
@@ -173,20 +171,26 @@ export default function App() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({password: trimmed}),
     });
-    const data = (await response.json().catch(() => ({}))) as {
-      token?: string;
-      error?: string;
-    };
+    const rawText = await response.text();
+    let data: {token?: string; error?: string} = {};
+    if (rawText.trim()) {
+      try {
+        data = JSON.parse(rawText) as {token?: string; error?: string};
+      } catch {
+        // Non-JSON response (e.g. HTML 404/500 from hosting)
+      }
+    }
     if (!response.ok || !data.token) {
       if (response.status === 409) {
         setAdminConfigured(false);
-      }
-      if (response.status === 404 || response.status === 405) {
         throw new Error(
-          'Сервер авторизации (/api/admin/login) недоступен на текущем статическом хостинге. Запустите сервер Node (npm start) с переменной ADMIN_PASSCODE.',
+          data.error ||
+            'Переменная ADMIN_PASSCODE ещё не задана — придумайте и сохраните пароль администратора ниже.',
         );
       }
-      throw new Error(data.error || 'Неверный пароль администратора');
+      throw new Error(
+        data.error || `Ошибка сервера (HTTP ${response.status}) при запросе к /api/admin/login`,
+      );
     }
     setAdminConfigured(true);
     setAdminToken(data.token);
@@ -199,20 +203,22 @@ export default function App() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({password: trimmed}),
     });
-    const data = (await response.json().catch(() => ({}))) as {
-      token?: string;
-      error?: string;
-    };
+    const rawText = await response.text();
+    let data: {token?: string; error?: string} = {};
+    if (rawText.trim()) {
+      try {
+        data = JSON.parse(rawText) as {token?: string; error?: string};
+      } catch {
+        // Non-JSON response
+      }
+    }
     if (!response.ok || !data.token) {
       if (response.status === 409) {
         setAdminConfigured(true);
       }
-      if (response.status === 404 || response.status === 405) {
-        throw new Error(
-          'Сервер настройки пароля (/api/admin/claim) недоступен на статическом хостинге. Запустите сервер Node (npm start) с переменной ADMIN_PASSCODE.',
-        );
-      }
-      throw new Error(data.error || 'Не удалось сохранить пароль администратора');
+      throw new Error(
+        data.error || `Ошибка сервера (HTTP ${response.status}) при запросе к /api/admin/claim`,
+      );
     }
     setAdminConfigured(true);
     setAdminToken(data.token);
