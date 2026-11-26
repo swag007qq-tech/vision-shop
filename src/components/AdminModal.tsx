@@ -40,6 +40,7 @@ interface AdminModalProps {
   onPasswordSignIn: (password: string) => Promise<void>;
   onLogout: () => void;
   firestoreProductIds: Set<number>;
+  firestoreReadError?: string;
   onSeedFirestore: (excludeId?: number) => Promise<void>;
   products: ProductItem[];
   initialEditProductId?: number | null;
@@ -226,6 +227,7 @@ export function AdminModal({
   onPasswordSignIn,
   onLogout,
   firestoreProductIds,
+  firestoreReadError = '',
   onSeedFirestore,
   products,
   initialEditProductId = null,
@@ -593,9 +595,21 @@ export function AdminModal({
                 <div className="flex flex-wrap items-center justify-between gap-2.5 px-3.5 py-2.5 rounded-2xl border border-black/15 bg-[#FAFAFA] text-[12px] font-bold text-[#141414]">
                   <div className="flex items-center gap-2 min-w-0">
                     <Database className="w-4 h-4 shrink-0" />
-                    <span className="truncate">База товаров подключена</span>
+                    <span className="truncate">
+                      База: {FIREBASE_TARGET_INFO.projectId} ({FIREBASE_TARGET_INFO.databaseId})
+                    </span>
                   </div>
                 </div>
+
+                {firestoreReadError && (
+                  <div
+                    role="alert"
+                    className="p-3 rounded-2xl bg-amber-50 border border-amber-300 text-[12px] font-bold text-amber-900 leading-snug"
+                  >
+                    Firestore отклонил чтение каталога: {firestoreReadError}. Проверьте правила
+                    Firestore Database → Rules в проекте {FIREBASE_TARGET_INFO.projectId}.
+                  </div>
+                )}
 
                 {panelError && (
                   <div

@@ -72,6 +72,7 @@ export default function App() {
   const [firestoreProducts, setFirestoreProducts] = useState<ProductItem[]>([]);
   const [firestoreLoaded, setFirestoreLoaded] = useState(false);
   const [firestoreSeeded, setFirestoreSeeded] = useState(false);
+  const [firestoreReadError, setFirestoreReadError] = useState<string>('');
 
   const [favoriteIds, setFavoriteIds] = useState<number[]>(loadSavedFavorites);
   const [cartQuantities, setCartQuantities] = useState<Record<number, number>>(loadSavedCart);
@@ -118,12 +119,14 @@ export default function App() {
       (items) => {
         setFirestoreProducts(items);
         setFirestoreLoaded(true);
+        setFirestoreReadError('');
         if (items.length > 0) {
           setFirestoreSeeded(true);
         }
       },
       (error) => {
         console.warn('Firestore catalog listener fallback:', error.message);
+        setFirestoreReadError(error.message);
         setFirestoreLoaded(true);
       },
     );
@@ -353,6 +356,7 @@ export default function App() {
           void handleAdminSignOut();
         }}
         firestoreProductIds={firestoreProductIds}
+        firestoreReadError={firestoreReadError}
         onSeedFirestore={handleSeedFirestore}
         products={products}
         initialEditProductId={quickEditId}

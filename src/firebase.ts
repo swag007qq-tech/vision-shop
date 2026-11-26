@@ -24,16 +24,22 @@ const resolvedConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID || firebaseConfig.appId,
 };
 
-const customProjectId = (import.meta.env.VITE_FIREBASE_PROJECT_ID || '').trim();
-const isCustomProject = Boolean(customProjectId) && customProjectId !== firebaseConfig.projectId;
-const customDatabaseId = (import.meta.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID || '').trim();
+const isAiStudioDefaultProject = resolvedProjectId === 'gen-lang-client-0460356534';
+const rawCustomDatabaseId = (import.meta.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID || '').trim();
+const safeCustomDatabaseId =
+  !isAiStudioDefaultProject && rawCustomDatabaseId.startsWith('ai-studio-')
+    ? ''
+    : rawCustomDatabaseId;
 
 const resolvedDatabaseId =
-  customDatabaseId || (isCustomProject ? '(default)' : firebaseConfig.firestoreDatabaseId);
+  safeCustomDatabaseId ||
+  (resolvedProjectId !== firebaseConfig.projectId
+    ? '(default)'
+    : firebaseConfig.firestoreDatabaseId);
 
 const app = initializeApp(resolvedConfig);
 
-// CRITICAL: Pass firestoreDatabaseId when configured
+// CRITICAL: Use default Firestore instance when databaseId is "(default)"
 export const db =
   resolvedDatabaseId && resolvedDatabaseId !== '(default)'
     ? getFirestore(app, resolvedDatabaseId)
