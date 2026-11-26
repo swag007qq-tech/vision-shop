@@ -5,6 +5,7 @@ export const MAX_RARITY_BADGES = 3;
 
 export interface ProductItem {
   id: number;
+  dbKey?: string;
   name: string;
   price: number;
   gemValue: number;

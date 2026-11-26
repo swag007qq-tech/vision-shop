@@ -1,10 +1,9 @@
 import {initializeApp} from 'firebase/app';
 import {getAuth} from 'firebase/auth';
-import {get, getDatabase, ref} from 'firebase/database';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const DEFAULT_RTDB_INSTANCE = 'my-shop-f8944-default-rtdb';
-const HARDCODED_DATABASE_URL = `https://${DEFAULT_RTDB_INSTANCE}.firebaseio.com`;
+export const HARDCODED_DATABASE_URL = `https://${DEFAULT_RTDB_INSTANCE}.firebaseio.com`;
 
 const resolvedProjectId = firebaseConfig.projectId.trim();
 const rawAuthDomain = firebaseConfig.authDomain.trim();
@@ -25,7 +24,6 @@ const resolvedConfig = {
 
 const app = initializeApp(resolvedConfig);
 
-export const rtdb = getDatabase(app, HARDCODED_DATABASE_URL);
 export const auth = getAuth(app);
 
 export const FIREBASE_TARGET_INFO = {
@@ -124,18 +122,6 @@ export function handleDatabaseError(
     operationType,
     path,
   };
-  console.error('Realtime Database Error: ', JSON.stringify(errInfo));
+  console.error('Realtime Database REST Error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
 }
-
-async function testConnection(): Promise<void> {
-  try {
-    await get(ref(rtdb, 'products'));
-  } catch (error) {
-    if (error instanceof Error && error.message.toLowerCase().includes('network')) {
-      console.warn('Realtime Database network check warning:', error.message);
-    }
-  }
-}
-
-void testConnection();

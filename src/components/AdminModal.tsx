@@ -2,6 +2,7 @@ import React, {useEffect, useState} from 'react';
 import {type User} from 'firebase/auth';
 import {AnimatePresence, motion} from 'motion/react';
 import {
+  Activity,
   Check,
   Database,
   Eye,
@@ -11,6 +12,7 @@ import {
   LogOut,
   Pencil,
   Plus,
+  RefreshCw,
   ShieldCheck,
   Trash2,
   X,
@@ -32,9 +34,13 @@ import {
   withTimeout,
 } from '../firebase';
 import {
+  type RtdbDiagnosticEntry,
+  clearRtdbDiagnostics,
   createProductInRtdb,
   deleteProductFromRtdb,
-  ensureFreshVerifiedToken,
+  getAdminIdToken,
+  refreshCatalogFromRtdb,
+  subscribeRtdbDiagnostics,
   updateProductInRtdb,
 } from '../services/realtimeDbService';
 import {RarityBadge, SingleRarityIcon} from './RarityBadge';
@@ -308,9 +314,16 @@ export function AdminModal({
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [panelError, setPanelError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [diagnostics, setDiagnostics] = useState<RtdbDiagnosticEntry[]>([]);
+  const [checkingRest, setCheckingRest] = useState(false);
 
   const productsRef = React.useRef(products);
   productsRef.current = products;
+
+  useEffect(() => {
+    if (!open) return;
+    return subscribeRtdbDiagnostics(setDiagnostics);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -432,7 +445,7 @@ export function AdminModal({
     try {
       await withTimeout(
         (async () => {
-          await ensureFreshVerifiedToken(activeUser);
+          await getAdminIdToken(activeUser);
           if (dbProductIds.size === 0 && products.length > 0) {
             try {
               await onSeedDatabase();
@@ -442,7 +455,7 @@ export function AdminModal({
           }
           await createProductInRtdb(activeUser, products, payload);
         })(),
-        DB_OPERATION_TIMEOUT_MS,
+        DB_OPERATION_TIMEOUT_MS * 2,
       );
       setAddForm(EMPTY_FORM);
       setShowAddForm(false);
@@ -487,12 +500,13 @@ export function AdminModal({
       imageUrl: editForm.imageUrl.trim(),
       rarity: editForm.rarity,
     };
+    const targetItem = productsRef.current.find((p) => p.id === id);
 
     setSaving(true);
     try {
       await withTimeout(
         (async () => {
-          await ensureFreshVerifiedToken(activeUser);
+          await getAdminIdToken(activeUser);
           if (dbProductIds.size === 0 && products.length > 0) {
             try {
               await onSeedDatabase(id);
@@ -500,9 +514,9 @@ export function AdminModal({
               // Continue updating the target product even if other placeholders were skipped
             }
           }
-          await updateProductInRtdb(activeUser, id, payload);
+          await updateProductInRtdb(activeUser, id, payload, targetItem?.dbKey);
         })(),
-        DB_OPERATION_TIMEOUT_MS,
+        DB_OPERATION_TIMEOUT_MS * 2,
       );
       setEditingId(null);
     } catch (error) {
@@ -528,20 +542,22 @@ export function AdminModal({
       return;
     }
 
+    const targetItem = productsRef.current.find((p) => p.id === id);
+
     setSaving(true);
     try {
       await withTimeout(
         (async () => {
-          await ensureFreshVerifiedToken(activeUser);
+          await getAdminIdToken(activeUser);
           let deletedViaSeed = false;
           if (dbProductIds.size === 0 && products.length > 0) {
             deletedViaSeed = await onSeedDatabase(id);
           }
           if (!deletedViaSeed) {
-            await deleteProductFromRtdb(id);
+            await deleteProductFromRtdb(activeUser, id, targetItem?.dbKey);
           }
         })(),
-        DB_OPERATION_TIMEOUT_MS,
+        DB_OPERATION_TIMEOUT_MS * 2,
       );
       setConfirmDeleteId(null);
       if (editingId === id) setEditingId(null);
@@ -555,6 +571,21 @@ export function AdminModal({
       );
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleTestRestRead = async () => {
+    if (checkingRest) return;
+    setCheckingRest(true);
+    setPanelError('');
+    try {
+      await refreshCatalogFromRtdb();
+    } catch (error) {
+      setPanelError(
+        formatDatabasePanelError(error, 'Не удалось выполнить GET-запрос к базе', authUser?.email),
+      );
+    } finally {
+      setCheckingRest(false);
     }
   };
 
@@ -691,9 +722,18 @@ export function AdminModal({
                   <div className="flex items-center gap-2 min-w-0">
                     <Database className="w-4 h-4 shrink-0" />
                     <span className="truncate">
-                      База: {FIREBASE_TARGET_INFO.projectId} ({FIREBASE_TARGET_INFO.databaseId})
+                      REST API: {FIREBASE_TARGET_INFO.databaseUrl}/products.json
                     </span>
                   </div>
+                  <button
+                    type="button"
+                    disabled={checkingRest}
+                    onClick={handleTestRestRead}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-black/25 bg-white text-[11px] font-bold text-[#141414] hover:bg-neutral-100 disabled:opacity-50 cursor-pointer shrink-0"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${checkingRest ? 'animate-spin' : ''}`} />
+                    <span>{checkingRest ? 'Проверка...' : 'Проверить GET'}</span>
+                  </button>
                 </div>
 
                 {dbReadError && (
@@ -714,6 +754,72 @@ export function AdminModal({
                     {panelError}
                   </div>
                 )}
+
+                {/* REST Request Diagnostics Block */}
+                <div className="rounded-2xl border border-black/15 bg-[#FAFAFA] p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-[12px] font-extrabold text-[#141414]">
+                      <Activity className="w-3.5 h-3.5 shrink-0" />
+                      <span>Диагностика REST-запросов ({diagnostics.length})</span>
+                    </div>
+                    {diagnostics.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={clearRtdbDiagnostics}
+                        className="text-[11px] font-bold text-neutral-500 hover:text-[#141414] underline cursor-pointer"
+                      >
+                        Очистить
+                      </button>
+                    )}
+                  </div>
+
+                  {diagnostics.length === 0 ? (
+                    <p className="text-[11px] font-medium text-neutral-500">
+                      Нажмите «Сохранить», «Удалить» или «Проверить GET» — здесь появится HTTP-статус и ответ сервера.
+                    </p>
+                  ) : (
+                    <div className="space-y-1.5 max-h-[160px] overflow-y-auto pr-1">
+                      {diagnostics.map((entry) => (
+                        <div
+                          key={entry.id}
+                          className={`p-2 rounded-xl border text-[11px] leading-snug ${
+                            entry.status === 'pending'
+                              ? 'bg-blue-50/70 border-blue-200 text-blue-900'
+                              : entry.status === 'success'
+                                ? 'bg-emerald-50/70 border-emerald-200 text-emerald-950'
+                                : 'bg-red-50 border-red-200 text-red-900'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2 font-extrabold flex-wrap">
+                            <span>
+                              [{entry.timestamp}] {entry.method} • {entry.action}
+                            </span>
+                            <span>
+                              {entry.status === 'pending'
+                                ? 'Отправка...'
+                                : entry.httpStatus
+                                  ? `HTTP ${entry.httpStatus}${entry.durationMs !== undefined ? ` (${entry.durationMs} мс)` : ''}`
+                                  : `Ошибка${entry.durationMs !== undefined ? ` (${entry.durationMs} мс)` : ''}`}
+                            </span>
+                          </div>
+                          <div className="text-[10px] font-mono opacity-80 break-all mt-0.5">
+                            {entry.url} ({entry.authMode === 'auth-token' ? 'с auth-токеном' : 'публичный'})
+                          </div>
+                          {entry.errorMessage && (
+                            <div className="font-bold text-red-700 mt-1 break-words">
+                              Ошибка: {entry.errorMessage}
+                            </div>
+                          )}
+                          {entry.responseBody && (
+                            <div className="font-mono text-[10px] bg-white/75 rounded-lg px-2 py-1 mt-1 border border-black/10 break-all">
+                              Ответ: {entry.responseBody}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
 
                 {/* Add Product Toggle & Form */}
                 <div className="rounded-[24px] border-[1.5px] border-[#1A1A1A] p-3.5 sm:p-4 bg-neutral-50/70">
