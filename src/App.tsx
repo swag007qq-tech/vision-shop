@@ -216,14 +216,15 @@ export default function App() {
   }, []);
 
   const handleSeedDatabase = useCallback(
-    async (excludeId?: number) => {
-      if (!authUser || !isRealtimeAdmin) return;
+    async (excludeId?: number): Promise<boolean> => {
+      if (!authUser || !isRealtimeAdmin) return false;
       const itemsToSeed =
         typeof excludeId === 'number'
           ? DEFAULT_PRODUCTS.filter((item) => item.id !== excludeId)
           : DEFAULT_PRODUCTS;
-      await seedProductsIfEmpty(authUser, itemsToSeed);
+      const seeded = await seedProductsIfEmpty(authUser, itemsToSeed);
       setRtdbSeeded(true);
+      return seeded;
     },
     [authUser, isRealtimeAdmin],
   );

@@ -11,11 +11,25 @@ import {
 import {ProductItem, RarityCode, normalizeRarityString} from '../data/products';
 import {
   BOOTSTRAPPED_ADMIN_EMAIL,
+  DB_OPERATION_TIMEOUT_MS,
   OperationType,
   SCHEMA_LIMITS,
   handleDatabaseError,
   rtdb,
+  withTimeout,
 } from '../firebase';
+
+export async function ensureFreshVerifiedToken(user: User): Promise<void> {
+  try {
+    const tokenResult = await withTimeout(user.getIdTokenResult(false), 1500);
+    if (tokenResult.claims?.email_verified === true) {
+      return;
+    }
+    await withTimeout(user.getIdToken(true), 2000);
+  } catch {
+    // Non-fatal: proceed with current session token so DB calls still report exact auth/rule error
+  }
+}
 
 function sanitizeRarity(rarity: string | undefined): RarityCode {
   const normalized = normalizeRarityString(rarity);
@@ -138,7 +152,7 @@ export async function seedProductsIfEmpty(
     const path = 'products';
     const productsRef = ref(rtdb, path);
     try {
-      const existingSnap = await get(productsRef);
+      const existingSnap = await withTimeout(get(productsRef), DB_OPERATION_TIMEOUT_MS);
       if (existingSnap.exists() || seedItems.length === 0) {
         return false;
       }
@@ -167,7 +181,7 @@ export async function seedProductsIfEmpty(
         return false;
       }
 
-      await update(productsRef, updates);
+      await withTimeout(update(productsRef, updates), DB_OPERATION_TIMEOUT_MS);
       return true;
     } catch (error) {
       handleDatabaseError(error, OperationType.WRITE, path);
@@ -190,30 +204,47 @@ export async function createProductInRtdb(
   let nextId =
     currentProducts.reduce((maxId, item) => (item.id > maxId ? item.id : maxId), 0) + 1;
 
-  while (nextId <= 1000000) {
-    try {
-      const existing = await get(ref(rtdb, `products/${nextId}`));
-      if (!existing.exists()) break;
-      nextId += 1;
-    } catch {
-      break;
+  try {
+    const existingSnap = await withTimeout(get(ref(rtdb, 'products')), 2000);
+    const raw = existingSnap.val() as unknown;
+    if (raw && typeof raw === 'object') {
+      for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+        const keyNum = Number(key);
+        if (Number.isFinite(keyNum) && keyNum >= nextId) {
+          nextId = Math.floor(keyNum) + 1;
+        }
+        if (value && typeof value === 'object') {
+          const d = value as Record<string, unknown>;
+          if (typeof d.productId === 'number' && Number.isFinite(d.productId) && d.productId >= nextId) {
+            nextId = Math.floor(d.productId) + 1;
+          }
+        }
+      }
     }
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('Время ожидания')) {
+      throw err;
+    }
+    // Otherwise fall back to local maxId + 1 and let set() report exact permission/network error
   }
 
   const path = `products/${nextId}`;
   try {
-    await set(ref(rtdb, path), {
-      productId: nextId,
-      name: clean.name,
-      price: clean.price,
-      gemValue: clean.gemValue,
-      imageUrl: clean.imageUrl,
-      rarity: clean.rarity,
-      visibility: 'public',
-      createdBy: user.uid,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+    await withTimeout(
+      set(ref(rtdb, path), {
+        productId: nextId,
+        name: clean.name,
+        price: clean.price,
+        gemValue: clean.gemValue,
+        imageUrl: clean.imageUrl,
+        rarity: clean.rarity,
+        visibility: 'public',
+        createdBy: user.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }),
+      DB_OPERATION_TIMEOUT_MS,
+    );
     return {id: nextId, ...clean};
   } catch (error) {
     handleDatabaseError(error, OperationType.CREATE, path);
@@ -231,31 +262,43 @@ export async function updateProductInRtdb(
   const productRef = ref(rtdb, path);
 
   try {
-    const existingSnap = await get(productRef);
-    if (!existingSnap.exists()) {
-      await set(productRef, {
-        productId,
-        name: clean.name,
-        price: clean.price,
-        gemValue: clean.gemValue,
-        imageUrl: clean.imageUrl,
-        rarity: clean.rarity,
-        visibility: 'public',
-        createdBy: user.uid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+    const existingSnap = await withTimeout(get(productRef), 2000);
+    const existingVal = existingSnap.exists()
+      ? (existingSnap.val() as Record<string, unknown>)
+      : null;
+
+    if (!existingVal) {
+      await withTimeout(
+        set(productRef, {
+          productId,
+          name: clean.name,
+          price: clean.price,
+          gemValue: clean.gemValue,
+          imageUrl: clean.imageUrl,
+          rarity: clean.rarity,
+          visibility: 'public',
+          createdBy: user.uid,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        }),
+        DB_OPERATION_TIMEOUT_MS,
+      );
     } else {
-      await update(productRef, {
-        productId,
-        name: clean.name,
-        price: clean.price,
-        gemValue: clean.gemValue,
-        imageUrl: clean.imageUrl,
-        rarity: clean.rarity,
-        visibility: 'public',
-        updatedAt: serverTimestamp(),
-      });
+      await withTimeout(
+        update(productRef, {
+          productId,
+          name: clean.name,
+          price: clean.price,
+          gemValue: clean.gemValue,
+          imageUrl: clean.imageUrl,
+          rarity: clean.rarity,
+          visibility: 'public',
+          createdBy: typeof existingVal.createdBy === 'string' ? existingVal.createdBy : user.uid,
+          createdAt: existingVal.createdAt ?? serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        }),
+        DB_OPERATION_TIMEOUT_MS,
+      );
     }
     return {id: productId, ...clean};
   } catch (error) {
@@ -267,7 +310,7 @@ export async function deleteProductFromRtdb(id: number): Promise<void> {
   const productId = Math.floor(id);
   const path = `products/${productId}`;
   try {
-    await remove(ref(rtdb, path));
+    await withTimeout(remove(ref(rtdb, path)), DB_OPERATION_TIMEOUT_MS);
   } catch (error) {
     handleDatabaseError(error, OperationType.DELETE, path);
   }

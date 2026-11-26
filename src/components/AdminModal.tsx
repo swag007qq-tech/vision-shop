@@ -23,14 +23,78 @@ import {
   parseRarityCodes,
   toggleRarityToken,
 } from '../data/products';
-import {ADMIN_LOGIN_EMAIL, FIREBASE_TARGET_INFO, auth} from '../firebase';
+import {
+  ADMIN_LOGIN_EMAIL,
+  DB_OPERATION_TIMEOUT_MS,
+  FIREBASE_TARGET_INFO,
+  SCHEMA_LIMITS,
+  auth,
+  withTimeout,
+} from '../firebase';
 import {
   createProductInRtdb,
   deleteProductFromRtdb,
+  ensureFreshVerifiedToken,
   updateProductInRtdb,
 } from '../services/realtimeDbService';
 import {RarityBadge, SingleRarityIcon} from './RarityBadge';
 import {GemIcon, PlaceholderStarIcon} from './VisionIllustrations';
+
+const MAX_IMAGE_WIDTH = 400;
+const JPEG_QUALITY = 0.7;
+
+function compressImageFileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
+
+    img.onload = () => {
+      try {
+        const naturalWidth = img.naturalWidth || img.width;
+        const naturalHeight = img.naturalHeight || img.height;
+        if (!naturalWidth || !naturalHeight) {
+          reject(new Error('Не удалось определить размеры изображения'));
+          return;
+        }
+
+        const targetWidth = Math.min(MAX_IMAGE_WIDTH, naturalWidth);
+        const targetHeight = Math.max(1, Math.round((naturalHeight * targetWidth) / naturalWidth));
+
+        const canvas = document.createElement('canvas');
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error('Не удалось инициализировать Canvas для сжатия фото'));
+          return;
+        }
+
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, targetWidth, targetHeight);
+        ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+
+        const base64 = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
+        if (!base64.startsWith('data:image/jpeg;base64,')) {
+          reject(new Error('Не удалось сжать изображение в JPEG'));
+          return;
+        }
+        resolve(base64);
+      } catch (err) {
+        reject(err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Не удалось загрузить выбранное изображение'));
+    };
+
+    img.src = objectUrl;
+  });
+}
 
 interface AdminModalProps {
   open: boolean;
@@ -41,7 +105,7 @@ interface AdminModalProps {
   onLogout: () => void;
   dbProductIds: Set<number>;
   dbReadError?: string;
-  onSeedDatabase: (excludeId?: number) => Promise<void>;
+  onSeedDatabase: (excludeId?: number) => Promise<boolean>;
   products: ProductItem[];
   initialEditProductId?: number | null;
 }
@@ -299,32 +363,44 @@ export function AdminModal({
     }
   };
 
-  const handleImageFileChange = (
+  const handleImageFileChange = async (
     e: React.ChangeEvent<HTMLInputElement>,
     setter: React.Dispatch<React.SetStateAction<ProductFormState>>,
   ) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!/^image\/(png|jpeg|jpg|webp|gif)$/i.test(file.type)) {
-      setPanelError('Поддерживаются только PNG, JPG, WEBP или GIF');
-      return;
-    }
-    if (file.size > 600_000) {
-      setPanelError('Размер изображения не должен превышать 600 КБ');
-      return;
-    }
-    setPanelError('');
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setter((prev) => ({...prev, imageUrl: reader.result as string}));
+
+    try {
+      const isSupportedMime = /^image\/(png|jpeg|jpg|webp|gif)$/i.test(file.type);
+      const isSupportedExt = /\.(png|jpe?g|webp|gif)$/i.test(file.name);
+      if (!isSupportedMime && !isSupportedExt) {
+        setPanelError('Поддерживаются только PNG, JPG, WEBP или GIF');
+        return;
       }
-    };
-    reader.readAsDataURL(file);
+      if (file.size > 15 * 1024 * 1024) {
+        setPanelError('Исходный файл слишком большой (максимум 15 МБ)');
+        return;
+      }
+
+      setPanelError('');
+      const compressedBase64 = await compressImageFileToBase64(file);
+      if (compressedBase64.length > SCHEMA_LIMITS.PRODUCT_IMAGE_MAX_LENGTH) {
+        setPanelError('Сжатое изображение всё ещё превышает лимит базы данных');
+        return;
+      }
+      setter((prev) => ({...prev, imageUrl: compressedBase64}));
+    } catch (error) {
+      setPanelError(
+        error instanceof Error ? error.message : 'Не удалось обработать изображение',
+      );
+    } finally {
+      e.target.value = '';
+    }
   };
 
   const handleCreateProduct = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (saving) return;
     setPanelError('');
 
     const activeUser = authUser ?? auth.currentUser;
@@ -354,15 +430,20 @@ export function AdminModal({
 
     setSaving(true);
     try {
-      await activeUser.getIdToken(true).catch(() => undefined);
-      if (dbProductIds.size === 0 && products.length > 0) {
-        try {
-          await onSeedDatabase();
-        } catch {
-          // Do not block adding a new item if initial seed collides with existing records
-        }
-      }
-      await createProductInRtdb(activeUser, products, payload);
+      await withTimeout(
+        (async () => {
+          await ensureFreshVerifiedToken(activeUser);
+          if (dbProductIds.size === 0 && products.length > 0) {
+            try {
+              await onSeedDatabase();
+            } catch {
+              // Do not block adding a new item if initial seed collides with existing records
+            }
+          }
+          await createProductInRtdb(activeUser, products, payload);
+        })(),
+        DB_OPERATION_TIMEOUT_MS,
+      );
       setAddForm(EMPTY_FORM);
       setShowAddForm(false);
     } catch (error) {
@@ -379,6 +460,7 @@ export function AdminModal({
   };
 
   const handleSaveEdit = async (id: number) => {
+    if (saving) return;
     setPanelError('');
 
     const activeUser = authUser ?? auth.currentUser;
@@ -408,15 +490,20 @@ export function AdminModal({
 
     setSaving(true);
     try {
-      await activeUser.getIdToken(true).catch(() => undefined);
-      if (dbProductIds.size === 0 && products.length > 0) {
-        try {
-          await onSeedDatabase(id);
-        } catch {
-          // Continue updating the target product even if other placeholders were skipped
-        }
-      }
-      await updateProductInRtdb(activeUser, id, payload);
+      await withTimeout(
+        (async () => {
+          await ensureFreshVerifiedToken(activeUser);
+          if (dbProductIds.size === 0 && products.length > 0) {
+            try {
+              await onSeedDatabase(id);
+            } catch {
+              // Continue updating the target product even if other placeholders were skipped
+            }
+          }
+          await updateProductInRtdb(activeUser, id, payload);
+        })(),
+        DB_OPERATION_TIMEOUT_MS,
+      );
       setEditingId(null);
     } catch (error) {
       setPanelError(
@@ -432,6 +519,7 @@ export function AdminModal({
   };
 
   const handleDeleteProduct = async (id: number) => {
+    if (saving) return;
     setPanelError('');
 
     const activeUser = authUser ?? auth.currentUser;
@@ -442,12 +530,19 @@ export function AdminModal({
 
     setSaving(true);
     try {
-      await activeUser.getIdToken(true).catch(() => undefined);
-      if (dbProductIds.size === 0 && products.length > 0) {
-        await onSeedDatabase(id);
-      } else {
-        await deleteProductFromRtdb(id);
-      }
+      await withTimeout(
+        (async () => {
+          await ensureFreshVerifiedToken(activeUser);
+          let deletedViaSeed = false;
+          if (dbProductIds.size === 0 && products.length > 0) {
+            deletedViaSeed = await onSeedDatabase(id);
+          }
+          if (!deletedViaSeed) {
+            await deleteProductFromRtdb(id);
+          }
+        })(),
+        DB_OPERATION_TIMEOUT_MS,
+      );
       setConfirmDeleteId(null);
       if (editingId === id) setEditingId(null);
     } catch (error) {
@@ -614,7 +709,7 @@ export function AdminModal({
                 {panelError && (
                   <div
                     role="alert"
-                    className="p-3 rounded-2xl bg-red-50 border border-red-200 text-[13px] font-bold text-red-700"
+                    className="sticky top-0 z-20 p-3 rounded-2xl bg-red-50 border border-red-300 text-[13px] font-bold text-red-700 shadow-md"
                   >
                     {panelError}
                   </div>
@@ -837,14 +932,15 @@ export function AdminModal({
                                       type="button"
                                       disabled={saving}
                                       onClick={() => handleDeleteProduct(item.id)}
-                                      className="px-3 py-2 min-h-[38px] rounded-full bg-red-600 text-white text-[12px] font-bold hover:bg-red-700 cursor-pointer"
+                                      className="px-3 py-2 min-h-[38px] rounded-full bg-red-600 text-white text-[12px] font-bold hover:bg-red-700 disabled:opacity-50 cursor-pointer"
                                     >
-                                      Удалить
+                                      {saving ? 'Удаление...' : 'Удалить'}
                                     </button>
                                     <button
                                       type="button"
+                                      disabled={saving}
                                       onClick={() => setConfirmDeleteId(null)}
-                                      className="px-2.5 py-2 min-h-[38px] rounded-full border border-black/25 text-[12px] font-bold text-neutral-700 hover:bg-neutral-100 cursor-pointer"
+                                      className="px-2.5 py-2 min-h-[38px] rounded-full border border-black/25 text-[12px] font-bold text-neutral-700 hover:bg-neutral-100 disabled:opacity-50 cursor-pointer"
                                     >
                                       Нет
                                     </button>
@@ -948,6 +1044,20 @@ export function AdminModal({
                                   </button>
                                 )}
                               </div>
+
+                              {editForm.imageUrl && (
+                                <div className="flex items-center gap-2.5">
+                                  <img
+                                    src={editForm.imageUrl}
+                                    alt="Предпросмотр"
+                                    referrerPolicy="no-referrer"
+                                    className="w-12 h-10 rounded-xl object-cover border border-black/20"
+                                  />
+                                  <span className="text-[11px] font-semibold text-neutral-500">
+                                    Фото готово к сохранению
+                                  </span>
+                                </div>
+                              )}
 
                               <RaritySelector
                                 value={editForm.rarity}

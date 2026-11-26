@@ -4,45 +4,62 @@ import {get, getDatabase, ref} from 'firebase/database';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const DEFAULT_RTDB_INSTANCE = 'my-shop-f8944-default-rtdb';
+const HARDCODED_DATABASE_URL = `https://${DEFAULT_RTDB_INSTANCE}.firebaseio.com`;
 
-const resolvedProjectId = (
-  import.meta.env.VITE_FIREBASE_PROJECT_ID || firebaseConfig.projectId
-).trim();
-const rawAuthDomain = (
-  import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfig.authDomain
-).trim();
+const resolvedProjectId = firebaseConfig.projectId.trim();
+const rawAuthDomain = firebaseConfig.authDomain.trim();
 const resolvedAuthDomain =
   rawAuthDomain && !rawAuthDomain.startsWith('://') && rawAuthDomain.includes('.')
     ? rawAuthDomain
     : `${resolvedProjectId}.firebaseapp.com`;
 
-const customRtdbUrl = (import.meta.env.VITE_FIREBASE_DATABASE_URL || '').trim();
-const resolvedDatabaseUrl =
-  customRtdbUrl && customRtdbUrl !== 'https://firebaseio.com'
-    ? customRtdbUrl
-    : `https://${DEFAULT_RTDB_INSTANCE}.firebaseio.com`;
-
 const resolvedConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || firebaseConfig.apiKey,
+  apiKey: firebaseConfig.apiKey,
   authDomain: resolvedAuthDomain,
   projectId: resolvedProjectId,
-  databaseURL: resolvedDatabaseUrl,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || firebaseConfig.storageBucket,
-  messagingSenderId:
-    import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseConfig.messagingSenderId,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || firebaseConfig.appId,
+  databaseURL: HARDCODED_DATABASE_URL,
+  storageBucket: firebaseConfig.storageBucket,
+  messagingSenderId: firebaseConfig.messagingSenderId,
+  appId: firebaseConfig.appId,
 };
 
 const app = initializeApp(resolvedConfig);
 
-export const rtdb = getDatabase(app, resolvedDatabaseUrl);
+export const rtdb = getDatabase(app, HARDCODED_DATABASE_URL);
 export const auth = getAuth(app);
 
 export const FIREBASE_TARGET_INFO = {
   projectId: resolvedConfig.projectId,
   databaseId: DEFAULT_RTDB_INSTANCE,
-  databaseUrl: resolvedDatabaseUrl,
+  databaseUrl: HARDCODED_DATABASE_URL,
 };
+
+export const DB_OPERATION_TIMEOUT_MS = 5000;
+
+export function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs = DB_OPERATION_TIMEOUT_MS,
+  timeoutMessage = `Время ожидания ответа от Realtime Database истекло (${Math.round(
+    timeoutMs / 1000,
+  )} сек). Проверьте подключение к сети, databaseURL (${HARDCODED_DATABASE_URL}) и правила доступа.`,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = globalThis.setTimeout(() => {
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+
+    promise.then(
+      (value) => {
+        globalThis.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        globalThis.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
 
 export const BOOTSTRAPPED_ADMIN_EMAIL = 'swag007qq@gmail.com';
 export const ADMIN_LOGIN_EMAIL =
